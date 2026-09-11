@@ -1,0 +1,21 @@
+packages:
+  - 'apps/*'
+  - 'packages/shared'
+  - 'packages/protocol'
+  - 'packages/easytier-js/runtime'
+  - 'packages/easytier-js/browser'
+  - 'packages/easytier-js/cloudflare'
+
+# 上游 easytier-js 依赖的构建期 override，保持一致以避免二进制差异。
+overrides:
+  minimatch: 10.2.4
+
+# 允许执行安装脚本的依赖。esbuild 提供二进制，workerd 提供 Workers 本地运行时。
+onlyBuiltDependencies:
+  - esbuild
+  - workerd
+
+allowBuilds:
+  esbuild: true
+  sharp: false
+  workerd: true

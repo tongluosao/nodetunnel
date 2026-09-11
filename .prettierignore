@@ -1,0 +1,9 @@
+dist
+build
+node_modules
+pnpm-lock.yaml
+.turbo
+.wrangler
+coverage
+其他项目代码
+apps/worker/wasm

@@ -1,0 +1,37 @@
+# 依赖
+node_modules/
+.pnpm-store/
+
+# 构建产物
+dist/
+build/
+.turbo/
+*.tsbuildinfo
+
+# WASM 生成物（由 scripts/build-wasm 产出，不入库）
+apps/worker/wasm/
+apps/portal/public/easytier_core.wasm
+
+# Cloudflare / Wrangler
+.wrangler/
+.dev.vars
+.dev.vars.*
+!.dev.vars.example
+
+# 测试与覆盖率
+coverage/
+.nyc_output/
+
+# 编辑器与系统
+.vscode/*
+!.vscode/extensions.json
+.idea/
+.DS_Store
+Thumbs.db
+
+# 日志
+*.log
+logs/
+
+# 参考代码（只读参考，绝不入库、绝不修改）
+其他项目代码/

@@ -1,0 +1,38 @@
+{
+  "name": "nodetunnel",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "基于 Cloudflare Worker 的 EasyTier 中继与 HTTP 隧道服务",
+  "license": "MIT",
+  "packageManager": "pnpm@11.22.0",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "dev": "turbo dev",
+    "dev:worker": "pnpm --filter @nodetunnel/worker dev",
+    "dev:admin": "pnpm --filter @nodetunnel/admin dev",
+    "dev:portal": "pnpm --filter @nodetunnel/portal dev",
+    "build": "turbo build",
+    "build:wasm": "node packages/easytier-js/runtime/scripts/build-wasm.mjs browser apps/portal/public/easytier_core.wasm",
+    "build:wasm:cf": "node packages/easytier-js/runtime/scripts/build-wasm.mjs cloudflare apps/worker/wasm/easytier_core.wasm",
+    "typecheck": "turbo typecheck",
+    "lint": "eslint .",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "test": "turbo test",
+    "check": "pnpm format:check && pnpm lint && pnpm typecheck && pnpm test",
+    "db:migrate:local": "pnpm --filter @nodetunnel/worker db:migrate:local",
+    "db:migrate:remote": "pnpm --filter @nodetunnel/worker db:migrate",
+    "deploy": "pnpm --filter @nodetunnel/worker deploy"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.20.0",
+    "eslint": "^9.20.0",
+    "prettier": "^3.5.0",
+    "turbo": "^2.4.0",
+    "typescript": "^5.9.3",
+    "typescript-eslint": "^8.24.0"
+  }
+}

@@ -1,0 +1,19 @@
+# NodeTunnel Worker 本地开发环境变量
+#
+# 复制为 .dev.vars 后填入真实值。.dev.vars 已被 .gitignore 排除。
+#
+# 生成高强度随机值（PowerShell）：
+#   [Convert]::ToBase64String((1..48 | ForEach-Object { Get-Random -Max 256 }))
+
+# 会话令牌签名密钥（必需，至少 32 字节）。缺失时 Worker 拒绝启动。
+ADMIN_SESSION_SECRET=replace-with-at-least-32-bytes-of-random-data
+
+# 隧道组网密码加密密钥（必需，32 字节 base64）。用于加解密 network_secret。
+NT_MASTER_KEY=replace-with-base64-encoded-32-bytes
+
+# 中继专用组网的网络密钥（必需）。所有 tunnel 与浏览器节点接入此组网。
+NT_RELAY_NETWORK_NAME=nodetunnel-relay
+NT_RELAY_NETWORK_SECRET=replace-with-relay-network-secret
+
+# 管理后台跨域来源（开发期），生产环境应改为真实域名
+NT_ADMIN_ORIGIN=http://127.0.0.1:5173
