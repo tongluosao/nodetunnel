@@ -1,4 +1,4 @@
-import { CONFIG_SERVER_PATH, NODE_ONLINE_WINDOW_SECONDS, ROUTE_PREFIX } from '@nodetunnel/shared';
+import { CONFIG_SERVER_PATH, ROUTE_PREFIX } from '@nodetunnel/shared';
 
 import type { Env } from './env.js';
 import { AppError } from './lib/errors.js';
@@ -8,6 +8,12 @@ import { handleConfigServer } from './config-server/handler.js';
 import { handleTunnelRequest } from './http-tunnel/proxy.js';
 import { handleRelay, handleRelayHealth } from './relay/handler.js';
 import { handleHome } from './home.js';
+
+/**
+ * Durable Object 类必须从入口文件导出，Wrangler 才会生成对应绑定。
+ * 类名需与 wrangler.jsonc 中 durable_objects.bindings[].class_name 一致。
+ */
+export { EasyTierRelayObject } from './relay/relay-object.js';
 
 /**
  * Worker 入口（接入层）。
@@ -85,6 +91,3 @@ function handleTopLevelError(error: unknown, path: string): Response {
     { status: 500 },
   );
 }
-
-/** 供测试与文档引用：节点在线判定窗口。 */
-export const onlineWindowSeconds = NODE_ONLINE_WINDOW_SECONDS;

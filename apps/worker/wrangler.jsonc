@@ -3,10 +3,13 @@
   "name": "nodetunnel",
   "main": "src/index.ts",
   "compatibility_date": "2026-07-29",
-  // nodejs_compat：上游 EasyTier WASM 依赖部分 Node 内建（如 process）。
-  // jspi：EasyTier 运行时的 WASI 实现使用 WebAssembly.Suspending /
-  //       promising 做异步挂起与恢复，Worker 必须开启该标志。
-  "compatibility_flags": ["nodejs_compat", "jspi"],
+  // 与上游 easytier-js/cloudflare 的 wrangler.jsonc 保持一致：只需 nodejs_compat。
+  //
+  // 曾尝试加入 JSPI 相关标志，但 workerd 并不存在名为 jspi /
+  // experimental_wasm_jspi 的 compatibility flag（两者都会导致
+  // 「No such compatibility flag」而无法启动）。上游 Cloudflare 适配层
+  // 不使用 JSPI 调度，浏览器 profile 才需要 WebAssembly.Suspending。
+  "compatibility_flags": ["nodejs_compat"],
   "rules": [
     {
       "type": "CompiledWasm",
