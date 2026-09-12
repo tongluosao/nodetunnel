@@ -48,7 +48,8 @@ export async function handleTunnelRequest(request: Request, env: Env): Promise<R
 
   const route = await routesRegistry.findEnabledRouteBySlug(env, slug);
   if (route === undefined) {
-    throw new AppError(ErrorCode.NOT_FOUND, `路由 /${ROUTE_PREFIX}/${slug} 不存在或已禁用`);
+    // ROUTE_PREFIX 本身已带前导斜杠，不能再补一个。
+    throw new AppError(ErrorCode.NOT_FOUND, `路由 ${ROUTE_PREFIX}/${slug} 不存在或已禁用`);
   }
 
   const tunnel = await registry.findTunnel(env, route.tunnelId);

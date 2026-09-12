@@ -1,0 +1,17 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "composite": false,
+    "jsx": "preserve",
+    "lib": ["ES2023", "DOM", "DOM.Iterable"],
+    "types": [],
+    "paths": {
+      "@/*": ["./src/*"],
+      "@nodetunnel/shared": ["../../packages/shared/src/index.ts"],
+      "@easytier/browser": ["../../packages/easytier-js/browser/src/index.ts"],
+      "@easytier/runtime": ["../../packages/easytier-js/runtime/src/index.ts"],
+      "@easytier/runtime/adapter": ["../../packages/easytier-js/runtime/src/adapter.ts"]
+    }
+  },
+  "include": ["src/**/*.ts", "src/**/*.vue", "test/**/*.ts", "vite.config.ts", "vitest.config.ts"]
+}

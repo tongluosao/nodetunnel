@@ -170,7 +170,15 @@ export default tseslint.config(
   },
   {
     // Node 脚本使用 Node 全局对象，且不做类型化约束。
-    files: ['scripts/**/*.mjs', 'scripts/**/*.js', 'packages/easytier-js/**/scripts/**/*.mjs'],
+    // 覆盖仓库根 scripts/ 以及各应用、包内的 scripts/ 目录。
+    files: [
+      'scripts/**/*.mjs',
+      'scripts/**/*.js',
+      'apps/*/scripts/**/*.mjs',
+      'apps/*/scripts/**/*.js',
+      'packages/**/scripts/**/*.mjs',
+      'packages/**/scripts/**/*.js',
+    ],
     languageOptions: {
       globals: {
         process: 'readonly',

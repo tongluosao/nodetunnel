@@ -17,6 +17,7 @@
     "build": "turbo build",
     "build:wasm": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build-wasm.ps1 -Profile browser -Output packages/easytier-js/browser/src/generated/easytier_core.wasm",
     "build:wasm:cf": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build-wasm.ps1 -Profile cloudflare -Output packages/easytier-js/cloudflare/src/generated/easytier_core.wasm",
+    "build:wasm:all": "pnpm build:wasm:cf && pnpm build:wasm && pnpm --filter @nodetunnel/portal prepare:wasm",
     "sync:upstream": "node scripts/sync-upstream.mjs",
     "typecheck": "turbo typecheck",
     "lint": "eslint .",

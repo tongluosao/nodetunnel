@@ -1,0 +1,28 @@
+{
+  "name": "@nodetunnel/portal",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "NodeTunnel 浏览器门户：在浏览器内运行 EasyTier 节点并直连隧道服务",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview",
+    "typecheck": "vue-tsc --noEmit",
+    "test": "vitest run --passWithNoTests",
+    "prepare:wasm": "node scripts/copy-wasm.mjs"
+  },
+  "dependencies": {
+    "@easytier/browser": "workspace:*",
+    "@easytier/runtime": "workspace:*",
+    "@nodetunnel/shared": "workspace:*",
+    "vue": "^3.5.13"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-vue": "^5.2.1",
+    "typescript": "^5.9.3",
+    "vite": "^6.0.0",
+    "vitest": "3.0.0",
+    "vue-tsc": "^2.2.0"
+  }
+}
