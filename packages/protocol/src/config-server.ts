@@ -48,9 +48,14 @@ export interface HeartbeatResponse {
   config_revision?: string;
 }
 
-export interface GetFeatureRequest {
-  /** 无字段。 */
-}
+/**
+ * GetFeature 请求。
+ *
+ * 该 RPC 按协议不带参数，因此这里用 `Record<string, never>` 明确表达
+ * 「不接受任何字段」，而不是空接口——空接口在 TypeScript 中会允许
+ * 任意非空值，从而放过本应被拒绝的请求。
+ */
+export type GetFeatureRequest = Record<string, never>;
 
 export interface GetFeatureResponse {
   support_encryption: boolean;

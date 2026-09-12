@@ -1,8 +1,4 @@
-import {
-  MAX_TUNNEL_RESPONSE_BYTES,
-  ROUTE_PREFIX,
-  UPSTREAM_TIMEOUT_MS,
-} from '@nodetunnel/shared';
+import { MAX_TUNNEL_RESPONSE_BYTES, ROUTE_PREFIX, UPSTREAM_TIMEOUT_MS } from '@nodetunnel/shared';
 
 import type { Env } from '../env.js';
 import { AppError, ErrorCode } from '../lib/errors.js';

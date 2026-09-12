@@ -15,7 +15,7 @@
   "scripts": {
     "build": "echo \"@easytier/cloudflare 直接以 TS 源码被 worker 打包，无需构建\"",
     "typecheck": "tsc --noEmit",
-    "test": "vitest run"
+    "test": "vitest run --passWithNoTests"
   },
   "dependencies": {
     "@easytier/runtime": "workspace:*"

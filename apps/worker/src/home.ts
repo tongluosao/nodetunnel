@@ -50,9 +50,7 @@ export async function handleHome(request: Request, env: Env): Promise<Response> 
 }
 
 /** 探测中继健康状态；失败不影响首页与根健康检查的可用性。 */
-async function probeRelay(
-  env: Env,
-): Promise<{ ok: boolean; state: string; connections: number }> {
+async function probeRelay(env: Env): Promise<{ ok: boolean; state: string; connections: number }> {
   try {
     const healthRequest = new Request('https://internal/health', { method: 'GET' });
     const response = await env.EASYTIER_RELAY.getByName('primary').fetch(healthRequest);

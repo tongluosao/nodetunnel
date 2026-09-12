@@ -11,7 +11,7 @@
  *   pnpm sync:upstream          # 同步
  *   pnpm sync:upstream --check  # 只校验差异，不写入
  */
-import { cp, mkdir, readFile, readdir, stat, writeFile } from 'node:fs/promises';
+import { cp, mkdir, readdir, stat, writeFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -20,8 +20,6 @@ const scriptDirectory = path.dirname(fileURLToPath(import.meta.url));
 const repositoryRoot = path.resolve(scriptDirectory, '..');
 const upstreamRoot = path.join(repositoryRoot, '其他项目代码', 'EasyTier', 'easytier-js');
 const targetRoot = path.join(repositoryRoot, 'packages', 'easytier-js');
-
-const PACKAGES = ['runtime', 'browser', 'cloudflare'];
 
 /** 同步时需要一并复制的相对路径（相对于 easytier-js 根）。 */
 const COPY_ENTRIES = [
@@ -49,6 +47,10 @@ const COPY_ENTRIES = [
  *
  * package.json 也被保留：上游使用 `workspace:0.1.0` 与固定版本号，
  * 本项目需要 `private: true` 与 `workspace:*`，并在 exports 中直接指向 TS 源码。
+ *
+ * browser/cloudflare 的 tsconfig.json 同样保留：上游的 include 未覆盖
+ * runtime/src/jspi.d.ts，导致从这两个包发起类型检查时找不到
+ * WebAssembly.Suspending / promising 而报错。本项目在 include 中补上了该文件。
  */
 const PRESERVE = [
   path.join('runtime', 'src', 'transport'),
@@ -56,7 +58,9 @@ const PRESERVE = [
   path.join('runtime', 'src', 'rtc-host.ts'),
   path.join('runtime', 'package.json'),
   path.join('browser', 'package.json'),
+  path.join('browser', 'tsconfig.json'),
   path.join('cloudflare', 'package.json'),
+  path.join('cloudflare', 'tsconfig.json'),
 ];
 
 function normalize(relativePath) {
@@ -66,7 +70,8 @@ function normalize(relativePath) {
 function isPreserved(relativePath) {
   const normalized = normalize(relativePath);
   return PRESERVE.some(
-    (preserved) => normalized === normalize(preserved) || normalized.startsWith(`${normalize(preserved)}/`),
+    (preserved) =>
+      normalized === normalize(preserved) || normalized.startsWith(`${normalize(preserved)}/`),
   );
 }
 

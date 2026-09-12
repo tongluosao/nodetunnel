@@ -66,9 +66,6 @@ export async function handleRelayHealth(request: Request, env: Env): Promise<Res
     return Response.json({ ok: response.ok, network, ...body }, { status: response.status });
   } catch (error) {
     logger.error('relay_health_failed', { network, error: String(error) });
-    return Response.json(
-      { ok: false, state: 'stopped', connections: 0, network },
-      { status: 503 },
-    );
+    return Response.json({ ok: false, state: 'stopped', connections: 0, network }, { status: 503 });
   }
 }

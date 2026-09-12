@@ -20,10 +20,7 @@ export async function listRoutesForTunnel(env: Env, tunnelId: string): Promise<R
 }
 
 /** 按 slug 查找已启用的路由。访问入口使用此函数。 */
-export async function findEnabledRouteBySlug(
-  env: Env,
-  slug: string,
-): Promise<Route | undefined> {
+export async function findEnabledRouteBySlug(env: Env, slug: string): Promise<Route | undefined> {
   const route = await queries.findRouteBySlug(env.DB, slug);
   if (route === undefined || !route.enabled) {
     return undefined;

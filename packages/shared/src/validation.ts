@@ -182,7 +182,9 @@ export function validateTunnelPorts(input: unknown): Validated<TunnelPort[]> {
     seen.add(key);
     ports.push({ port: port.value, protocol: protocol.value });
   }
-  ports.sort((a, b) => (a.protocol === b.protocol ? a.port - b.port : a.protocol.localeCompare(b.protocol)));
+  ports.sort((a, b) =>
+    a.protocol === b.protocol ? a.port - b.port : a.protocol.localeCompare(b.protocol),
+  );
   return valid(ports);
 }
 

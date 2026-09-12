@@ -5,5 +5,11 @@ pnpm-lock.yaml
 .turbo
 .wrangler
 coverage
+.wasm-build
 其他项目代码
 apps/worker/wasm
+
+# vendored 上游代码：由 scripts/sync-upstream.mjs 从只读参考目录同步而来。
+# 本仓库遵循「最小改动复用上游」的原则，不对其重新排版——否则每次同步
+# 都会产生数百行纯格式差异，掩盖真正的改动。
+packages/easytier-js

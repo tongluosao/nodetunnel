@@ -18,13 +18,7 @@ import {
 import type { Env } from '../env.js';
 import { AppError, ErrorCode, err, ok, type Result } from '../lib/errors.js';
 import { logger } from '../lib/logger.js';
-import {
-  currentAdmin,
-  changePassword,
-  initializeAdmin,
-  isInitialized,
-  login,
-} from './auth.js';
+import { currentAdmin, changePassword, initializeAdmin, isInitialized, login } from './auth.js';
 import { buildClearSessionCookie, buildSessionCookie } from '../lib/session.js';
 import * as registry from '../nodetunnel/registry.js';
 import * as routesRegistry from '../nodetunnel/routes.js';
@@ -64,8 +58,7 @@ export async function handleAdminApi(
     }
     return response;
   } catch (error) {
-    const appError =
-      error instanceof AppError ? error : new AppError(ErrorCode.INTERNAL_ERROR);
+    const appError = error instanceof AppError ? error : new AppError(ErrorCode.INTERNAL_ERROR);
     if (!(error instanceof AppError)) {
       logger.error('admin_api_unhandled', {
         path,
@@ -83,7 +76,10 @@ async function dispatch(
   path: string,
   query: URLSearchParams,
 ): Promise<Response> {
-  const segments = path.slice(ADMIN_API_PREFIX.length).split('/').filter((s) => s !== '');
+  const segments = path
+    .slice(ADMIN_API_PREFIX.length)
+    .split('/')
+    .filter((s) => s !== '');
   const [head, ...rest] = segments;
 
   // ---------------------------------------------------------------- 认证
@@ -235,7 +231,9 @@ async function handleSetup(request: Request, env: Env): Promise<Response> {
   }
 
   // 初始化成功后直接签发会话，免去一次登录。
-  const token = await (await import('./auth.js')).login(env, {
+  const token = await (
+    await import('./auth.js')
+  ).login(env, {
     username: username.value,
     password: password.value,
   });
@@ -589,9 +587,7 @@ function parseTunnelBody(
   if (body.relayUrl !== undefined) {
     const relay = validateRelayUrl(body.relayUrl);
     if (!relay.ok) {
-      return err(
-        new AppError(ErrorCode.VALIDATION_FAILED, relay.message, { field: 'relayUrl' }),
-      );
+      return err(new AppError(ErrorCode.VALIDATION_FAILED, relay.message, { field: 'relayUrl' }));
     }
     output.relayUrl = relay.value;
   } else if (isCreate) {
@@ -728,9 +724,7 @@ function parseRouteBody(
   if (body.targetPort !== undefined || isCreate) {
     const port = validatePort(body.targetPort);
     if (!port.ok) {
-      return err(
-        new AppError(ErrorCode.VALIDATION_FAILED, port.message, { field: 'targetPort' }),
-      );
+      return err(new AppError(ErrorCode.VALIDATION_FAILED, port.message, { field: 'targetPort' }));
     }
     output.targetPort = port.value;
   }
@@ -778,9 +772,9 @@ async function handleSystem(
     const network = query.get('network') ?? '';
     try {
       // 复用中继处理器导出的对象名解析，确保与真实中继路由到同一个 Durable Object。
-      const response = await env.EASYTIER_RELAY.getByName(
-        relayObjectName(network),
-      ).fetch(new Request('https://internal/health', { method: 'GET' }));
+      const response = await env.EASYTIER_RELAY.getByName(relayObjectName(network)).fetch(
+        new Request('https://internal/health', { method: 'GET' }),
+      );
       const body = (await response.json().catch(() => ({}))) as Record<string, unknown>;
       return Response.json({ ok: response.ok, ...body }, { status: 200 });
     } catch (error) {

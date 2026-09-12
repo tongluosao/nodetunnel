@@ -153,10 +153,7 @@ export async function findAdminByUsername(
   };
 }
 
-export async function findAdminById(
-  db: D1Database,
-  id: string,
-): Promise<AdminAccount | undefined> {
+export async function findAdminById(db: D1Database, id: string): Promise<AdminAccount | undefined> {
   const row = await db
     .prepare('SELECT id, username, created_at, updated_at FROM admins WHERE id = ?')
     .bind(id)
@@ -232,25 +229,21 @@ export async function listTunnels(db: D1Database): Promise<Tunnel[]> {
   return (tunnels.results ?? []).map((row) => toTunnel(row, portsByTunnel.get(row.id) ?? []));
 }
 
-export async function findTunnelById(
-  db: D1Database,
-  id: string,
-): Promise<Tunnel | undefined> {
+export async function findTunnelById(db: D1Database, id: string): Promise<Tunnel | undefined> {
   const row = await db.prepare('SELECT * FROM tunnels WHERE id = ?').bind(id).first<TunnelRow>();
   if (row === null) {
     return undefined;
   }
   const ports = await db
-    .prepare('SELECT * FROM tunnel_ports WHERE tunnel_id = ? AND enabled = 1 ORDER BY protocol ASC, port ASC')
+    .prepare(
+      'SELECT * FROM tunnel_ports WHERE tunnel_id = ? AND enabled = 1 ORDER BY protocol ASC, port ASC',
+    )
     .bind(id)
     .all<PortRow>();
   return toTunnel(row, (ports.results ?? []).map(toPort));
 }
 
-export async function findTunnelByName(
-  db: D1Database,
-  name: string,
-): Promise<Tunnel | undefined> {
+export async function findTunnelByName(db: D1Database, name: string): Promise<Tunnel | undefined> {
   const row = await db
     .prepare('SELECT * FROM tunnels WHERE name = ?')
     .bind(name)
@@ -259,17 +252,16 @@ export async function findTunnelByName(
     return undefined;
   }
   const ports = await db
-    .prepare('SELECT * FROM tunnel_ports WHERE tunnel_id = ? AND enabled = 1 ORDER BY protocol ASC, port ASC')
+    .prepare(
+      'SELECT * FROM tunnel_ports WHERE tunnel_id = ? AND enabled = 1 ORDER BY protocol ASC, port ASC',
+    )
     .bind(row.id)
     .all<PortRow>();
   return toTunnel(row, (ports.results ?? []).map(toPort));
 }
 
 /** 取出加密的组网密钥。只有渲染客户端配置时才需要调用。 */
-export async function findTunnelSecret(
-  db: D1Database,
-  id: string,
-): Promise<string | undefined> {
+export async function findTunnelSecret(db: D1Database, id: string): Promise<string | undefined> {
   const row = await db
     .prepare('SELECT network_secret_enc FROM tunnels WHERE id = ?')
     .bind(id)
@@ -409,10 +401,7 @@ export async function listRoutesByTunnel(db: D1Database, tunnelId: string): Prom
   return (rows.results ?? []).map(toRoute);
 }
 
-export async function findRouteBySlug(
-  db: D1Database,
-  slug: string,
-): Promise<Route | undefined> {
+export async function findRouteBySlug(db: D1Database, slug: string): Promise<Route | undefined> {
   const row = await db.prepare('SELECT * FROM routes WHERE slug = ?').bind(slug).first<RouteRow>();
   return row === null ? undefined : toRoute(row);
 }

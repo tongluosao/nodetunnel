@@ -222,9 +222,7 @@ export async function verifySession<T>(token: string, secret: string): Promise<T
     .replace(/\+/g, '-')
     .replace(/\//g, '_')
     .replace(/=+$/, '');
-  if (
-    !timingSafeEqual(textEncoder.encode(expectedEncoded), textEncoder.encode(signaturePart))
-  ) {
+  if (!timingSafeEqual(textEncoder.encode(expectedEncoded), textEncoder.encode(signaturePart))) {
     return undefined;
   }
   try {

@@ -1,10 +1,10 @@
 packages:
-  - 'apps/*'
-  - 'packages/shared'
-  - 'packages/protocol'
-  - 'packages/easytier-js/runtime'
-  - 'packages/easytier-js/browser'
-  - 'packages/easytier-js/cloudflare'
+  - "apps/*"
+  - "packages/shared"
+  - "packages/protocol"
+  - "packages/easytier-js/runtime"
+  - "packages/easytier-js/browser"
+  - "packages/easytier-js/cloudflare"
 
 # 上游 easytier-js 依赖的构建期 override，保持一致以避免二进制差异。
 overrides:
@@ -16,6 +16,8 @@ onlyBuiltDependencies:
   - workerd
 
 allowBuilds:
+  core-js: true
   esbuild: true
   sharp: false
+  vue-demi: true
   workerd: true

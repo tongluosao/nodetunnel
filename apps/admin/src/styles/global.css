@@ -1,0 +1,283 @@
+/* NodeTunnel 管理后台全局样式。 */
+
+:root {
+  --nt-bg: #0f1420;
+  --nt-panel: #171d2b;
+  --nt-border: #262e40;
+  --nt-text: #e6ebf5;
+  --nt-text-dim: #8b96ad;
+  --nt-accent: #4f7cff;
+  --nt-success: #23b26d;
+  --nt-warning: #e0a020;
+  --nt-danger: #e04b4b;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#app {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  background: var(--nt-bg);
+  color: var(--nt-text);
+  font-family:
+    -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB',
+    'Microsoft YaHei', sans-serif;
+  font-size: 14px;
+  line-height: 1.6;
+}
+
+/* ------------------------------ 居中卡片布局 ------------------------------ */
+
+.nt-centered {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 100%;
+  padding: 24px;
+  background:
+    radial-gradient(1000px 500px at 50% -10%, rgba(79, 124, 255, 0.16), transparent 70%),
+    var(--nt-bg);
+}
+
+.nt-card {
+  width: 100%;
+  max-width: 420px;
+  padding: 36px 32px;
+  background: var(--nt-panel);
+  border: 1px solid var(--nt-border);
+  border-radius: 14px;
+  box-shadow: 0 18px 48px rgba(0, 0, 0, 0.42);
+}
+
+.nt-brand {
+  margin-bottom: 28px;
+  text-align: center;
+}
+
+.nt-brand__title {
+  margin: 0;
+  font-size: 24px;
+  font-weight: 650;
+  letter-spacing: 0.5px;
+}
+
+.nt-brand__subtitle {
+  margin: 6px 0 0;
+  color: var(--nt-text-dim);
+  font-size: 13px;
+}
+
+/* ------------------------------ 布局 ------------------------------ */
+
+.nt-shell {
+  display: flex;
+  min-height: 100%;
+}
+
+.nt-sider {
+  width: 216px;
+  flex: 0 0 216px;
+  padding: 20px 12px;
+  background: var(--nt-panel);
+  border-right: 1px solid var(--nt-border);
+}
+
+.nt-logo {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 4px 10px 20px;
+  font-size: 17px;
+  font-weight: 650;
+}
+
+.nt-logo__dot {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: var(--nt-accent);
+  box-shadow: 0 0 12px var(--nt-accent);
+}
+
+.nt-nav {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.nt-nav__item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 9px 12px;
+  color: var(--nt-text-dim);
+  border-radius: 9px;
+  text-decoration: none;
+  transition:
+    background 0.15s,
+    color 0.15s;
+}
+
+.nt-nav__item:hover {
+  background: rgba(79, 124, 255, 0.09);
+  color: var(--nt-text);
+}
+
+.nt-nav__item--active {
+  background: rgba(79, 124, 255, 0.16);
+  color: #fff;
+  font-weight: 550;
+}
+
+.nt-main {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.nt-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 15px 26px;
+  border-bottom: 1px solid var(--nt-border);
+}
+
+.nt-header__title {
+  margin: 0;
+  font-size: 17px;
+  font-weight: 600;
+}
+
+.nt-header__user {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  color: var(--nt-text-dim);
+}
+
+.nt-content {
+  flex: 1;
+  padding: 22px 26px 40px;
+  overflow: auto;
+}
+
+/* ------------------------------ 统计卡片 ------------------------------ */
+
+.nt-stats {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 14px;
+  margin-bottom: 22px;
+}
+
+.nt-stat {
+  padding: 18px 20px;
+  background: var(--nt-panel);
+  border: 1px solid var(--nt-border);
+  border-radius: 12px;
+}
+
+.nt-stat__label {
+  color: var(--nt-text-dim);
+  font-size: 13px;
+}
+
+.nt-stat__value {
+  margin-top: 6px;
+  font-size: 27px;
+  font-weight: 650;
+  font-variant-numeric: tabular-nums;
+}
+
+/* ------------------------------ 面板 ------------------------------ */
+
+.nt-panel-card {
+  padding: 20px 22px;
+  background: var(--nt-panel);
+  border: 1px solid var(--nt-border);
+  border-radius: 12px;
+}
+
+.nt-panel-card + .nt-panel-card {
+  margin-top: 18px;
+}
+
+.nt-panel-card__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  margin-bottom: 16px;
+}
+
+.nt-panel-card__title {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.nt-hint {
+  margin: 0 0 14px;
+  color: var(--nt-text-dim);
+  font-size: 13px;
+}
+
+/* ------------------------------ 其它 ------------------------------ */
+
+.nt-mono {
+  font-family: 'Cascadia Code', 'JetBrains Mono', Consolas, monospace;
+  font-size: 12.5px;
+}
+
+.nt-pre {
+  max-height: 460px;
+  margin: 0;
+  padding: 16px;
+  overflow: auto;
+  background: #0b0f18;
+  border: 1px solid var(--nt-border);
+  border-radius: 10px;
+  color: #cfe0ff;
+  font-family: 'Cascadia Code', 'JetBrains Mono', Consolas, monospace;
+  font-size: 12.5px;
+  line-height: 1.65;
+  white-space: pre;
+}
+
+.nt-empty {
+  padding: 34px 0;
+  color: var(--nt-text-dim);
+  text-align: center;
+}
+
+/* 让 Ant Design 组件适配深色面板。 */
+.ant-form-item-label > label {
+  color: var(--nt-text) !important;
+}
+
+.ant-table {
+  background: transparent !important;
+}
+
+.ant-table-thead > tr > th {
+  background: #1d2434 !important;
+  color: var(--nt-text-dim) !important;
+  border-bottom: 1px solid var(--nt-border) !important;
+}
+
+.ant-table-tbody > tr > td {
+  border-bottom: 1px solid var(--nt-border) !important;
+}
+
+.ant-table-tbody > tr:hover > td {
+  background: rgba(79, 124, 255, 0.07) !important;
+}

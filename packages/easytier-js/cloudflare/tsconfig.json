@@ -11,5 +11,5 @@
     "noUncheckedIndexedAccess": true,
     "useDefineForClassFields": true
   },
-  "include": ["src/**/*.ts", "test/**/*.ts", "example/**/*.ts"]
+  "include": ["src/**/*.ts", "test/**/*.ts", "example/**/*.ts", "../runtime/src/jspi.d.ts"]
 }

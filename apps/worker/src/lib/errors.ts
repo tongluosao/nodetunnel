@@ -88,11 +88,7 @@ export class AppError extends Error {
   readonly status: number;
   readonly details: Record<string, unknown> | undefined;
 
-  constructor(
-    code: ErrorCodeValue,
-    message?: string,
-    details?: Record<string, unknown>,
-  ) {
+  constructor(code: ErrorCodeValue, message?: string, details?: Record<string, unknown>) {
     super(message ?? ERROR_MESSAGE[code]);
     this.name = 'AppError';
     this.code = code;
@@ -101,7 +97,9 @@ export class AppError extends Error {
   }
 
   /** 序列化为对外的 JSON 响应体。不泄露堆栈与内部细节。 */
-  toBody(): { error: { code: ErrorCodeValue; message: string; details?: Record<string, unknown> } } {
+  toBody(): {
+    error: { code: ErrorCodeValue; message: string; details?: Record<string, unknown> };
+  } {
     const error: { code: ErrorCodeValue; message: string; details?: Record<string, unknown> } = {
       code: this.code,
       message: this.message,

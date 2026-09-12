@@ -151,9 +151,7 @@ export async function updateTunnel(
   if (input.networkName !== undefined && input.networkName !== existing.networkName) {
     const byNetwork = await queries.findTunnelByNetworkName(env.DB, input.networkName);
     if (byNetwork !== undefined && byNetwork.id !== id) {
-      return err(
-        new AppError(ErrorCode.CONFLICT, '该网络名称已被占用', { field: 'networkName' }),
-      );
+      return err(new AppError(ErrorCode.CONFLICT, '该网络名称已被占用', { field: 'networkName' }));
     }
   }
 

@@ -1,6 +1,8 @@
 // @ts-check
 import js from '@eslint/js';
 import tseslint from 'typescript-eslint';
+import pluginVue from 'eslint-plugin-vue';
+import vueParser from 'vue-eslint-parser';
 
 /**
  * 三层边界的强制规则。
@@ -27,12 +29,38 @@ export default tseslint.config(
       '**/.wrangler/**',
       '**/.turbo/**',
       '**/coverage/**',
+      '**/.wasm-build/**',
       '其他项目代码/**',
       '**/wasm/**',
+      '**/src/generated/**',
+      'packages/easytier-js/runtime/src/jspi.d.ts',
     ],
   },
   js.configs.recommended,
   ...tseslint.configs.recommended,
+  ...pluginVue.configs['flat/recommended'],
+  {
+    // 让 .vue 文件用 vue-eslint-parser 解析，并把 <script> 交给 TS 解析器。
+    files: ['**/*.vue'],
+    languageOptions: {
+      parser: vueParser,
+      parserOptions: {
+        parser: tseslint.parser,
+        ecmaVersion: 2023,
+        sourceType: 'module',
+      },
+    },
+    rules: {
+      // 单文件组件名与文件同名是常见约定，多词限制对本项目无意义。
+      'vue/multi-word-component-names': 'off',
+      // 本项目统一 2 空格缩进、单引号，交由 Prettier 处理版式。
+      'vue/html-indent': 'off',
+      'vue/max-attributes-per-line': 'off',
+      'vue/singleline-html-element-content-newline': 'off',
+      'vue/html-self-closing': 'off',
+      'vue/attributes-order': 'off',
+    },
+  },
   {
     files: ['**/*.ts', '**/*.tsx', '**/*.vue'],
     languageOptions: {
@@ -48,6 +76,111 @@ export default tseslint.config(
       eqeqeq: ['error', 'always'],
       'no-console': 'off',
       'prefer-const': 'error',
+    },
+  },
+  {
+    /**
+     * vendored 上游代码（packages/easytier-js）。
+     *
+     * 这批文件通过 scripts/sync-upstream.mjs 从只读参考目录同步而来，
+     * 本项目遵循「最小改动复用上游」的原则，因此不把本仓库的代码风格
+     * 强制施加到它们身上——否则每次同步都会产生无意义的冲突。
+     * 仅保留真正影响正确性的规则（如 no-undef 之外的错误用法）。
+     */
+    files: ['packages/easytier-js/**/*.ts'],
+    rules: {
+      '@typescript-eslint/consistent-type-imports': 'off',
+      '@typescript-eslint/no-explicit-any': 'off',
+      '@typescript-eslint/no-unused-vars': 'off',
+      '@typescript-eslint/no-empty-object-type': 'off',
+      '@typescript-eslint/no-empty-interface': 'off',
+      'prefer-const': 'off',
+      'no-undef': 'off',
+      'no-empty': 'off',
+      'no-useless-escape': 'off',
+    },
+  },
+  {
+    // 浏览器侧代码（管理后台、门户）使用 DOM 全局对象。
+    files: ['apps/admin/**/*.{ts,vue}', 'apps/portal/**/*.{ts,vue}'],
+    languageOptions: {
+      globals: {
+        window: 'readonly',
+        document: 'readonly',
+        navigator: 'readonly',
+        fetch: 'readonly',
+        console: 'readonly',
+        setTimeout: 'readonly',
+        clearTimeout: 'readonly',
+        setInterval: 'readonly',
+        clearInterval: 'readonly',
+        crypto: 'readonly',
+        URL: 'readonly',
+        URLSearchParams: 'readonly',
+        WebSocket: 'readonly',
+        Response: 'readonly',
+        Request: 'readonly',
+        Headers: 'readonly',
+        AbortController: 'readonly',
+        AbortSignal: 'readonly',
+        Blob: 'readonly',
+        TextEncoder: 'readonly',
+        TextDecoder: 'readonly',
+        performance: 'readonly',
+        localStorage: 'readonly',
+        sessionStorage: 'readonly',
+        WebAssembly: 'readonly',
+        RTCPeerConnection: 'readonly',
+        RTCDataChannel: 'readonly',
+        RTCSessionDescription: 'readonly',
+        RTCIceCandidate: 'readonly',
+        MessageChannel: 'readonly',
+        atob: 'readonly',
+        btoa: 'readonly',
+        structuredClone: 'readonly',
+      },
+    },
+  },
+  {
+    // Worker 侧运行在 Cloudflare 运行时，部分 DOM 类型以全局形式可用。
+    files: ['apps/worker/**/*.ts', 'packages/**/*.ts'],
+    languageOptions: {
+      globals: {
+        crypto: 'readonly',
+        WebAssembly: 'readonly',
+        fetch: 'readonly',
+        console: 'readonly',
+        Response: 'readonly',
+        Request: 'readonly',
+        Headers: 'readonly',
+        URL: 'readonly',
+        URLSearchParams: 'readonly',
+        WebSocketPair: 'readonly',
+        AbortController: 'readonly',
+        AbortSignal: 'readonly',
+        TextEncoder: 'readonly',
+        TextDecoder: 'readonly',
+        atob: 'readonly',
+        btoa: 'readonly',
+        setTimeout: 'readonly',
+        clearTimeout: 'readonly',
+        structuredClone: 'readonly',
+      },
+    },
+  },
+  {
+    // Node 脚本使用 Node 全局对象，且不做类型化约束。
+    files: ['scripts/**/*.mjs', 'scripts/**/*.js', 'packages/easytier-js/**/scripts/**/*.mjs'],
+    languageOptions: {
+      globals: {
+        process: 'readonly',
+        console: 'readonly',
+        Buffer: 'readonly',
+        __dirname: 'readonly',
+        __filename: 'readonly',
+        URL: 'readonly',
+        WebAssembly: 'readonly',
+      },
     },
   },
   {
@@ -67,7 +200,11 @@ export default tseslint.config(
   },
   {
     // 业务层不得直接执行 SQL 或直接触碰 Durable Object 存储句柄。
-    files: ['apps/worker/src/nodetunnel/**', 'apps/worker/src/admin/**', 'apps/worker/src/http-tunnel/**'],
+    files: [
+      'apps/worker/src/nodetunnel/**',
+      'apps/worker/src/admin/**',
+      'apps/worker/src/http-tunnel/**',
+    ],
     rules: {
       'no-restricted-imports': [
         'error',

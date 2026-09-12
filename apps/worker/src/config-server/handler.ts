@@ -13,7 +13,7 @@ import {
 import type { Env } from '../env.js';
 import { AppError, ErrorCode } from '../lib/errors.js';
 import { logger } from '../lib/logger.js';
-import { recordHeartbeat } from '../nodetunnel/node-registry.js';
+import { recordHeartbeat } from '../db/node-heartbeat.js';
 
 /**
  * EasyTier 配置服务器（需求 1.3）。
@@ -79,9 +79,7 @@ export async function handleConfigServer(request: Request, env: Env): Promise<Re
 async function handleMessage(data: unknown, socket: WebSocket, env: Env): Promise<void> {
   if (typeof data !== 'string') {
     socket.send(
-      JSON.stringify(
-        rpcFailure(null, RpcErrorCode.InvalidRequest, '仅支持 JSON 文本帧'),
-      ),
+      JSON.stringify(rpcFailure(null, RpcErrorCode.InvalidRequest, '仅支持 JSON 文本帧')),
     );
     return;
   }
@@ -114,9 +112,7 @@ async function handleMessage(data: unknown, socket: WebSocket, env: Env): Promis
       const heartbeat = normalizeHeartbeat(params);
       if (heartbeat === undefined) {
         socket.send(
-          JSON.stringify(
-            rpcFailure(id, RpcErrorCode.InvalidParams, '缺少 machine_id 或 inst_id'),
-          ),
+          JSON.stringify(rpcFailure(id, RpcErrorCode.InvalidParams, '缺少 machine_id 或 inst_id')),
         );
         return;
       }
@@ -130,9 +126,7 @@ async function handleMessage(data: unknown, socket: WebSocket, env: Env): Promis
 
     default:
       socket.send(
-        JSON.stringify(
-          rpcFailure(id, RpcErrorCode.MethodNotFound, `未知方法: ${method}`),
-        ),
+        JSON.stringify(rpcFailure(id, RpcErrorCode.MethodNotFound, `未知方法: ${method}`)),
       );
   }
 }

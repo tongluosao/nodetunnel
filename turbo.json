@@ -6,13 +6,28 @@
       "dependsOn": ["^build"],
       "outputs": ["dist/**", ".wrangler/**"]
     },
+    "@easytier/runtime#build": {
+      "outputs": []
+    },
+    "@easytier/cloudflare#build": {
+      "outputs": []
+    },
+    "@easytier/browser#build": {
+      "outputs": []
+    },
+    "@nodetunnel/shared#build": {
+      "outputs": []
+    },
+    "@nodetunnel/protocol#build": {
+      "outputs": []
+    },
     "typecheck": {
       "dependsOn": ["^build"],
       "outputs": []
     },
     "test": {
       "dependsOn": ["^build"],
-      "outputs": ["coverage/**"]
+      "outputs": []
     },
     "dev": {
       "cache": false,

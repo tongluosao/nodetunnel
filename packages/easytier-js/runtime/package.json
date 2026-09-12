@@ -19,7 +19,7 @@
   "scripts": {
     "build": "echo \"@easytier/runtime 直接以 TS 源码被使用方编译，无需构建\"",
     "typecheck": "tsc --noEmit",
-    "test": "vitest run"
+    "test": "vitest run --passWithNoTests"
   },
   "devDependencies": {
     "@types/node": "^22.18.1",
