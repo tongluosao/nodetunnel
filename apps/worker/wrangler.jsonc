@@ -3,7 +3,10 @@
   "name": "nodetunnel",
   "main": "src/index.ts",
   "compatibility_date": "2026-07-29",
-  "compatibility_flags": ["nodejs_compat"],
+  // nodejs_compat：上游 EasyTier WASM 依赖部分 Node 内建（如 process）。
+  // jspi：EasyTier 运行时的 WASI 实现使用 WebAssembly.Suspending /
+  //       promising 做异步挂起与恢复，Worker 必须开启该标志。
+  "compatibility_flags": ["nodejs_compat", "jspi"],
   "rules": [
     {
       "type": "CompiledWasm",

@@ -8,8 +8,11 @@ build/
 .turbo/
 *.tsbuildinfo
 
-# WASM 生成物（由 scripts/build-wasm 产出，不入库）
-apps/worker/wasm/
+# WASM 生成物与 Cargo 构建缓存
+# 由 scripts/build-wasm.ps1 产出，体积大且可复现，因此不入库。
+.wasm-build/
+packages/easytier-js/cloudflare/src/generated/
+packages/easytier-js/browser/src/generated/
 apps/portal/public/easytier_core.wasm
 
 # Cloudflare / Wrangler

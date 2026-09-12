@@ -1,5 +1,8 @@
 import { err, ok, type Result } from './result.js';
 
+export { err, ok };
+export type { Result } from './result.js';
+
 /**
  * 业务错误码。
  *
@@ -138,5 +141,3 @@ export function requireOk<T, E>(result: Result<T, E>, code?: ErrorCodeValue): T 
   }
   throw toAppError(result.error, code);
 }
-
-export { ok, err };
