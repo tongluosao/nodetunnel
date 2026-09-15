@@ -87,12 +87,12 @@ if round > 2 {
 
 决定逻辑在 `easytier-core/src/connectivity/hole_punch/udp/common.rs:81-137`：
 
-| 本端 ↓ / 对端 → | Open | Cone | EasySym | HardSym |
-| --- | --- | --- | --- | --- |
-| **Open** | None | None | None | None |
-| **Cone** | None | **ConeToCone** | None | None |
-| **EasySym** | None | **SymToCone** | **EasySymToEasySym** | None |
-| **HardSym** | None | **SymToCone** | None | None |
+| 本端 ↓ / 对端 → | Open | Cone           | EasySym              | HardSym |
+| --------------- | ---- | -------------- | -------------------- | ------- |
+| **Open**        | None | None           | None                 | None    |
+| **Cone**        | None | **ConeToCone** | None                 | None    |
+| **EasySym**     | None | **SymToCone**  | **EasySymToEasySym** | None    |
+| **HardSym**     | None | **SymToCone**  | None                 | None    |
 
 两个容易误读的点：
 
@@ -103,23 +103,23 @@ if round > 2 {
 
 ### 3.3 各策略在 WebRTC 下的可用性
 
-| 策略 | WebRTC 可用？ | 原因 |
-| --- | --- | --- |
-| **ConeToCone** | ⚠️ 可用但无意义 | ICE 原生就做这件事，不需要 EasyTier 代码 |
-| **SymToCone** | ❌ 不可用 | 需指定源端口、从 84 个 socket 发包；浏览器不暴露也不允许干预 UDP 端口 |
-| **EasySymToEasySym** | ❌ 不可用 | 需 STUN 查基准端口 + 预测偏移（`DST_PORT_OFFSET = 20`）+ 绑 25 个 socket |
-| **HardSym 端口扫描** | ❌ 不可用 | 需绑多个 socket 并任意指定目标端口，浏览器无此能力 |
-| **HardSym↔HardSym** | ❌ 不可用 | 上游本就未实现 |
+| 策略                 | WebRTC 可用？   | 原因                                                                     |
+| -------------------- | --------------- | ------------------------------------------------------------------------ |
+| **ConeToCone**       | ⚠️ 可用但无意义 | ICE 原生就做这件事，不需要 EasyTier 代码                                 |
+| **SymToCone**        | ❌ 不可用       | 需指定源端口、从 84 个 socket 发包；浏览器不暴露也不允许干预 UDP 端口    |
+| **EasySymToEasySym** | ❌ 不可用       | 需 STUN 查基准端口 + 预测偏移（`DST_PORT_OFFSET = 20`）+ 绑 25 个 socket |
+| **HardSym 端口扫描** | ❌ 不可用       | 需绑多个 socket 并任意指定目标端口，浏览器无此能力                       |
+| **HardSym↔HardSym**  | ❌ 不可用       | 上游本就未实现                                                           |
 
 **关键推论**：这些策略**不需要迁移**。WebRTC 的 ICE 已经内含了工业级的打洞实现：
 
-| EasyTier | WebRTC/ICE 对应 |
-| --- | --- |
-| ConeToCone | ICE 原生（host / srflx candidate 互探） |
-| 84 个 UDP socket 数组 | ICE candidate pair 集合 |
-| SymToCone 端口预测 | ICE 不做（浏览器不暴露端口） |
-| HardSym 端口扫描 | ICE 不做 |
-| EasySymToEasySym | ICE 不做 |
+| EasyTier              | WebRTC/ICE 对应                         |
+| --------------------- | --------------------------------------- |
+| ConeToCone            | ICE 原生（host / srflx candidate 互探） |
+| 84 个 UDP socket 数组 | ICE candidate pair 集合                 |
+| SymToCone 端口预测    | ICE 不做（浏览器不暴露端口）            |
+| HardSym 端口扫描      | ICE 不做                                |
+| EasySymToEasySym      | ICE 不做                                |
 
 ICE 的策略是固定的：**能打就打（Cone 场景），打不通就靠 TURN 中转。**
 不存在「让 EasyTier 用生日攻击」的可能——攻击所需能力（绑端口、控源端口、
@@ -127,12 +127,12 @@ ICE 的策略是固定的：**能打就打（Cone 场景），打不通就靠 TU
 
 ### 3.4 对称型 NAT（NAT4）的实际结果
 
-| 场景 | EasyTier 原生 UDP | WebRTC |
-| --- | --- | --- |
-| Cone ↔ Cone | ✅ | ✅ ICE 直接搞定 |
-| Cone ↔ 一方有公网 IP | ✅ | ✅ |
-| Cone ↔ Sym | ✅ SymToCone | ❌ 需 TURN |
-| **Sym ↔ Sym（双方 NAT4）** | ❌ 上游未实现 | ❌ 需 TURN |
+| 场景                       | EasyTier 原生 UDP | WebRTC          |
+| -------------------------- | ----------------- | --------------- |
+| Cone ↔ Cone                | ✅                | ✅ ICE 直接搞定 |
+| Cone ↔ 一方有公网 IP       | ✅                | ✅              |
+| Cone ↔ Sym                 | ✅ SymToCone      | ❌ 需 TURN      |
+| **Sym ↔ Sym（双方 NAT4）** | ❌ 上游未实现     | ❌ 需 TURN      |
 
 **NAT4 ↔ NAT4 在任何方案下都基本无解**，除非部署 TURN。
 
@@ -180,17 +180,17 @@ ICE 的策略是固定的：**能打就打（Cone 场景），打不通就靠 TU
 
 ## 五、附：本文结论的源码依据
 
-| 结论 | 文件与行号 |
-| --- | --- |
-| WASM 导入 7 个 UDP 宿主函数 | `packages/easytier-js/browser/src/generated/easytier_core.wasm` import 段解析 |
-| JS 宿主全部返回 HOST_UNSUPPORTED | `packages/easytier-js/runtime/src/websocket-host.ts:161-169` |
-| `disable_p2p = true` 对两 profile 生效 | `packages/easytier-js/runtime/src/config.ts:64` |
-| 打洞策略矩阵 | `easytier-core/src/connectivity/hole_punch/udp/common.rs:81-137` |
-| 84 / 25 socket 数组常量 | `easytier-core/src/connectivity/hole_punch/udp/client.rs:38-39` |
-| 端口预测偏移 20 | `easytier-core/src/connectivity/hole_punch/udp/client.rs:40` |
-| 65535 端口打乱候选池 | `easytier-core/src/connectivity/hole_punch/udp/server.rs:79-80` |
-| 每轮 600~800 包、下限 180 | `easytier-core/src/connectivity/hole_punch/udp/server.rs:225-228` |
-| 扫描发送逻辑（每端口 3 包） | `easytier-core/src/connectivity/hole_punch/udp/server.rs:776-789` |
+| 结论                                   | 文件与行号                                                                    |
+| -------------------------------------- | ----------------------------------------------------------------------------- |
+| WASM 导入 7 个 UDP 宿主函数            | `packages/easytier-js/browser/src/generated/easytier_core.wasm` import 段解析 |
+| JS 宿主全部返回 HOST_UNSUPPORTED       | `packages/easytier-js/runtime/src/websocket-host.ts:161-169`                  |
+| `disable_p2p = true` 对两 profile 生效 | `packages/easytier-js/runtime/src/config.ts:64`                               |
+| 打洞策略矩阵                           | `easytier-core/src/connectivity/hole_punch/udp/common.rs:81-137`              |
+| 84 / 25 socket 数组常量                | `easytier-core/src/connectivity/hole_punch/udp/client.rs:38-39`               |
+| 端口预测偏移 20                        | `easytier-core/src/connectivity/hole_punch/udp/client.rs:40`                  |
+| 65535 端口打乱候选池                   | `easytier-core/src/connectivity/hole_punch/udp/server.rs:79-80`               |
+| 每轮 600~800 包、下限 180              | `easytier-core/src/connectivity/hole_punch/udp/server.rs:225-228`             |
+| 扫描发送逻辑（每端口 3 包）            | `easytier-core/src/connectivity/hole_punch/udp/server.rs:776-789`             |
 
 `scripts/sync-upstream.mjs` 的 PRESERVE 列表已预留
 `runtime/src/rtc-host.ts` 与 `runtime/src/transport/`，供将来实现时新增文件
