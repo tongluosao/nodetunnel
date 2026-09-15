@@ -1,0 +1,14 @@
+{
+  "name": "nodetunnel-poc",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "阶段 0 可行性验证脚本：Node 侧 WebRTC DataChannel 与国内 STUN 可用性",
+  "scripts": {
+    "diag:stun": "node diag-stun.mjs",
+    "verify:datachannel": "node verify-datachannel.mjs"
+  },
+  "dependencies": {
+    "werift": "0.24.4"
+  }
+}
