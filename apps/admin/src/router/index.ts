@@ -46,10 +46,10 @@ const routes: RouteRecordRaw[] = [
         meta: { title: '路由管理' },
       },
       {
-        path: 'nodes',
-        name: 'nodes',
-        component: () => import('@/views/NodesView.vue'),
-        meta: { title: '节点列表' },
+        path: 'agents',
+        name: 'agents',
+        component: () => import('@/views/AgentsView.vue'),
+        meta: { title: '主机端' },
       },
       {
         path: 'settings',

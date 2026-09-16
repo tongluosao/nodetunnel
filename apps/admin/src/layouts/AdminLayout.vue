@@ -17,7 +17,7 @@ const navItems = [
   { name: 'dashboard', label: '仪表盘', icon: '◈' },
   { name: 'tunnels', label: '隧道管理', icon: '⬡' },
   { name: 'routes', label: '路由管理', icon: '⇄' },
-  { name: 'nodes', label: '节点列表', icon: '◉' },
+  { name: 'agents', label: '主机端', icon: '◉' },
   { name: 'settings', label: '系统设置', icon: '⚙' },
 ] as const;
 

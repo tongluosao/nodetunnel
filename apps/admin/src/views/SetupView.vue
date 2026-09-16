@@ -77,7 +77,9 @@ async function submit(): Promise<void> {
     <div class="nt-card">
       <div class="nt-brand">
         <h1 class="nt-brand__title">初始化 NodeTunnel</h1>
-        <p class="nt-brand__subtitle">首次使用请设置管理员账号。该账号用于管理隧道、路由与节点。</p>
+        <p class="nt-brand__subtitle">
+          首次使用请设置管理员账号。该账号用于管理隧道、路由与主机端。
+        </p>
       </div>
 
       <a-form layout="vertical" @submit.prevent="submit">

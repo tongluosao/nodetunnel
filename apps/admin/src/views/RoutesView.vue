@@ -7,8 +7,9 @@ import { api, ApiError, type Route, type Tunnel } from '@/api/client';
 /**
  * 路由管理（需求 1.2 的管理入口）。
  *
- * 路由把 <code>/t/&lt;slug&gt;</code> 映射到隧道内某个主机的端口。
- * 用户访问该路径时，Worker 经 EasyTier 虚拟网把请求转发到目标服务。
+ * 路由把 <code>/t/&lt;slug&gt;</code> 映射到某台主机上某个端口的服务。
+ * 用户访问该路径时，Worker 经信令房间把请求转交给对应隧道的主机端，
+ * 再由主机端转发到本地服务。
  */
 
 const routes = ref<Route[]>([]);
@@ -26,9 +27,7 @@ const form = reactive({
   enabled: true,
 });
 
-const tunnelOptions = computed(() =>
-  tunnels.value.map((t) => ({ label: `${t.name}（${t.networkName}）`, value: t.id })),
-);
+const tunnelOptions = computed(() => tunnels.value.map((t) => ({ label: t.name, value: t.id })));
 
 function tunnelName(tunnelId: string): string {
   return tunnels.value.find((t) => t.id === tunnelId)?.name ?? '（隧道已删除）';
@@ -143,7 +142,8 @@ onMounted(load);
       <div>
         <h2 class="nt-panel-card__title">路由列表</h2>
         <p class="nt-hint" style="margin: 4px 0 0">
-          把访问路径映射到隧道内的服务。目标主机应填写虚拟网内的地址 （如 10.144.144.x）。
+          把访问路径映射到主机上的服务。目标主机必须是主机端所在的内网/回环地址，
+          填写公网地址会被服务端拒绝。
         </p>
       </div>
       <a-button type="primary" :disabled="tunnels.length === 0" @click="openCreate">
@@ -225,9 +225,9 @@ onMounted(load);
 
       <a-form-item
         label="目标主机"
-        help="隧道节点在虚拟网中的地址。请勿填写公网地址，否则会绕过隧道。"
+        help="主机端本机可达的地址，例如 127.0.0.1 或内网地址。填写公网地址会被拒绝。"
       >
-        <a-input v-model:value="form.targetHost" placeholder="10.144.144.1" />
+        <a-input v-model:value="form.targetHost" placeholder="127.0.0.1" />
       </a-form-item>
 
       <a-form-item label="目标端口" help="目标服务监听的端口，需在隧道中被放行。">

@@ -4,40 +4,55 @@ import { computed, onMounted, reactive, ref } from 'vue';
 
 import { api, ApiError } from '@/api/client';
 import { useAuthStore } from '@/stores/auth';
-import { CONFIG_SERVER_PATH, ROUTE_PREFIX } from '@nodetunnel/shared';
-import { validatePassword } from '@nodetunnel/shared';
+import { ROUTE_PREFIX, validatePassword } from '@nodetunnel/shared';
 
 /**
  * 系统设置：接入信息与管理员改密。
  *
- * 接入信息由当前页面地址推导，确保管理员复制到的地址
- * 与实际部署的域名一致。
+ * 接入地址不再由前端拼接，而是取自 /system/endpoints —— 协议（ws/wss）
+ * 与路径的判断只应有一处实现，前端自行推导很容易与实际部署产生分歧。
  */
 
 const auth = useAuthStore();
 const saving = ref(false);
-const relayState = ref('unknown');
-const relayConnections = ref(0);
+const endpointsLoading = ref(false);
+const agentUrl = ref('');
+const signalingUrl = ref('');
 
 const password = reactive({ current: '', next: '', confirm: '' });
 const passwordErrors = reactive({ current: '', next: '', confirm: '' });
 
-const wsOrigin = computed(() => {
-  const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-  return `${protocol}//${window.location.host}`;
-});
-
-const configServerUrl = computed(() => `${wsOrigin.value}${CONFIG_SERVER_PATH}`);
-const relayUrlTemplate = computed(() => `${wsOrigin.value}/relay?network=<组网名>`);
 const routePrefix = computed(() => `${window.location.origin}${ROUTE_PREFIX}/<slug>/`);
 
-async function loadRelayStatus(): Promise<void> {
+/**
+ * agent 的 --server 参数要的是 HTTP(S) 地址，而接入地址是 WebSocket 地址。
+ * 这里只做协议替换，host 与路径保持服务端给的值，避免出现两套来源。
+ */
+const agentServerOrigin = computed(() => {
+  if (agentUrl.value === '') {
+    return '';
+  }
+  return agentUrl.value
+    .replace(/^ws:/, 'http:')
+    .replace(/^wss:/, 'https:')
+    .replace(/\/agent$/, '');
+});
+
+const agentCommand = computed(
+  () =>
+    `nodetunnel-agent --server ${agentServerOrigin.value || '<Worker 地址>'} --token <接入令牌> --ports 8080`,
+);
+
+async function loadEndpoints(): Promise<void> {
+  endpointsLoading.value = true;
   try {
-    const health = await api.system.relayHealth();
-    relayState.value = health.state ?? (health.ok ? 'running' : 'stopped');
-    relayConnections.value = health.connections ?? 0;
-  } catch {
-    relayState.value = 'unreachable';
+    const result = await api.system.endpoints();
+    agentUrl.value = result.agentUrl;
+    signalingUrl.value = result.signalingUrl;
+  } catch (error) {
+    message.error(error instanceof ApiError ? error.message : '加载接入地址失败');
+  } finally {
+    endpointsLoading.value = false;
   }
 }
 
@@ -92,30 +107,42 @@ async function changePassword(): Promise<void> {
   }
 }
 
-onMounted(loadRelayStatus);
+onMounted(loadEndpoints);
 </script>
 
 <template>
   <div class="nt-panel-card">
-    <h2 class="nt-panel-card__title">接入信息</h2>
-    <p class="nt-hint">
-      以下地址由当前访问域名推导。若管理后台与 Worker 部署在不同域名， 请把
-      <code class="nt-mono">{{ CONFIG_SERVER_PATH }}</code> 与
-      <code class="nt-mono">/relay</code> 替换为 Worker 的实际域名。
-    </p>
+    <div class="nt-panel-card__head">
+      <div>
+        <h2 class="nt-panel-card__title">接入信息</h2>
+        <p class="nt-hint" style="margin: 4px 0 0">
+          以下地址由服务端按当前部署域名推导。主机端 agent 使用接入地址，
+          浏览器门户使用信令地址，两者共用同一个 Worker。
+        </p>
+      </div>
+      <a-button size="small" :loading="endpointsLoading" @click="loadEndpoints">刷新</a-button>
+    </div>
 
     <a-descriptions :column="1" size="small" bordered>
-      <a-descriptions-item label="配置服务器地址">
+      <a-descriptions-item label="主机端接入地址">
         <div style="display: flex; align-items: center; gap: 10px">
-          <span class="nt-mono">{{ configServerUrl }}</span>
-          <a-button size="small" @click="copy(configServerUrl, '配置服务器地址')">复制</a-button>
+          <span class="nt-mono">{{ agentUrl || '—' }}</span>
+          <a-button size="small" :disabled="agentUrl === ''" @click="copy(agentUrl, '接入地址')">
+            复制
+          </a-button>
         </div>
       </a-descriptions-item>
 
-      <a-descriptions-item label="中继地址模板">
+      <a-descriptions-item label="浏览器信令地址">
         <div style="display: flex; align-items: center; gap: 10px">
-          <span class="nt-mono">{{ relayUrlTemplate }}</span>
-          <a-button size="small" @click="copy(relayUrlTemplate, '中继地址模板')">复制</a-button>
+          <span class="nt-mono">{{ signalingUrl || '—' }}</span>
+          <a-button
+            size="small"
+            :disabled="signalingUrl === ''"
+            @click="copy(signalingUrl, '信令地址')"
+          >
+            复制
+          </a-button>
         </div>
       </a-descriptions-item>
 
@@ -126,20 +153,21 @@ onMounted(loadRelayStatus);
         </div>
       </a-descriptions-item>
 
-      <a-descriptions-item label="中继状态">
-        <a-tag :color="relayState === 'running' ? 'green' : 'red'">
-          {{ relayState === 'running' ? '运行中' : relayState }}
-        </a-tag>
-        <span style="margin-left: 10px; color: var(--nt-text-dim)">
-          当前连接数 {{ relayConnections }}
-        </span>
-        <a-button size="small" style="margin-left: 10px" @click="loadRelayStatus">刷新</a-button>
-      </a-descriptions-item>
-
       <a-descriptions-item label="服务版本">
         <span class="nt-mono">{{ auth.version || '—' }}</span>
       </a-descriptions-item>
     </a-descriptions>
+
+    <h3 class="nt-panel-card__title" style="margin-top: 22px; font-size: 14px">启动主机端</h3>
+    <p class="nt-hint">
+      在需要暴露服务的主机上运行以下命令。令牌在「隧道管理」创建或轮换隧道时显示一次， 请粘贴到
+      <code class="nt-mono">&lt;接入令牌&gt;</code> 处；
+      <code class="nt-mono">--ports</code> 填本机允许放行的端口。
+    </p>
+    <pre class="nt-pre">{{ agentCommand }}</pre>
+    <div style="margin-top: 12px; text-align: right">
+      <a-button @click="copy(agentCommand, '启动命令')">复制命令</a-button>
+    </div>
   </div>
 
   <div class="nt-panel-card">

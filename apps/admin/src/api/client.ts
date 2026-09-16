@@ -1,4 +1,13 @@
 import { ADMIN_API_PREFIX } from '@nodetunnel/shared';
+import type {
+  AgentRecord,
+  DashboardStats,
+  PortProtocol,
+  Route,
+  Tunnel,
+  TunnelPort,
+  TunnelWithToken,
+} from '@nodetunnel/shared';
 
 /**
  * 管理 API 客户端。
@@ -7,7 +16,19 @@ import { ADMIN_API_PREFIX } from '@nodetunnel/shared';
  *   - 会话 Cookie（同源请求自动携带）；
  *   - 错误结构反序列化（后端固定返回 { error: { code, message } }）；
  *   - 401 时抛出可识别的错误，由路由守卫引导回登录页。
+ *
+ * 领域类型全部复用 @nodetunnel/shared，避免前后端各写一份契约而逐渐漂移。
  */
+
+export type {
+  AgentRecord,
+  DashboardStats,
+  PortProtocol,
+  Route,
+  Tunnel,
+  TunnelPort,
+  TunnelWithToken,
+};
 
 export class ApiError extends Error {
   constructor(
@@ -92,6 +113,7 @@ function json(body: unknown): RequestInit {
 
 /* ------------------------------ 类型定义 ------------------------------ */
 
+/** 管理后台会话中的管理员视图。服务端返回完整账号，前端只用到标识与用户名。 */
 export interface AdminInfo {
   id: string;
   username: string;
@@ -103,52 +125,12 @@ export interface AuthStatus {
   authenticated: boolean;
 }
 
-export interface TunnelPort {
-  port: number;
-  protocol: 'tcp' | 'udp';
-}
-
-export interface Tunnel {
-  id: string;
-  name: string;
-  networkName: string;
-  relayUrl: string;
-  enabled: boolean;
-  ports: TunnelPort[];
-  createdAt: number;
-  updatedAt: number;
-}
-
-export interface Route {
-  id: string;
-  slug: string;
-  tunnelId: string;
-  targetHost: string;
-  targetPort: number;
-  enabled: boolean;
-  createdAt: number;
-  updatedAt: number;
-}
-
-export interface NodeRecord {
-  id: string;
-  instanceId: string;
-  machineId: string | null;
-  hostname: string | null;
-  tunnelId: string | null;
-  ipv4: string | null;
-  easytierVersion: string | null;
-  lastSeen: number;
-  createdAt: number;
-}
-
-export interface DashboardStats {
-  tunnelCount: number;
-  routeCount: number;
-  nodeCount: number;
-  onlineNodeCount: number;
-  relayConnections: number;
-  relayUrl: string;
+/** 主机端与门户需要的接入地址，由服务端按当前部署域名推导。 */
+export interface Endpoints {
+  /** 主机端 agent 的 WebSocket 接入地址。 */
+  agentUrl: string;
+  /** 浏览器访客的信令地址。 */
+  signalingUrl: string;
 }
 
 /* -------------------------------- 接口 -------------------------------- */
@@ -180,35 +162,19 @@ export const api = {
   tunnels: {
     list: () => request<{ tunnels: Tunnel[] }>('/tunnels'),
     get: (id: string) => request<{ tunnel: Tunnel }>(`/tunnels/${id}`),
-    config: (id: string) =>
-      fetch(`${ADMIN_API_PREFIX}/tunnels/${id}/config`, { credentials: 'same-origin' }).then(
-        async (response) => {
-          if (!response.ok) {
-            throw new ApiError('config_fetch_failed', '获取配置失败', response.status);
-          }
-          return response.text();
-        },
-      ),
-    create: (input: {
-      name: string;
-      networkName: string;
-      networkSecret: string;
-      relayUrl?: string;
-      ports: TunnelPort[];
-      enabled?: boolean;
-    }) => request<{ tunnel: Tunnel }>('/tunnels', { method: 'POST', ...json(input) }),
-    update: (
-      id: string,
-      input: Partial<{
-        name: string;
-        networkName: string;
-        networkSecret: string;
-        relayUrl: string;
-        ports: TunnelPort[];
-        enabled: boolean;
-      }>,
-    ) => request<{ tunnel: Tunnel }>(`/tunnels/${id}`, { method: 'PUT', ...json(input) }),
+    /** 创建隧道。返回值里的 token 是明文，只会出现这一次。 */
+    create: (input: { name: string; ports?: TunnelPort[]; enabled?: boolean }) =>
+      request<{ tunnel: TunnelWithToken }>('/tunnels', { method: 'POST', ...json(input) }),
+    update: (id: string, input: Partial<{ name: string; ports: TunnelPort[]; enabled: boolean }>) =>
+      request<{ tunnel: Tunnel }>(`/tunnels/${id}`, { method: 'PUT', ...json(input) }),
     remove: (id: string) => request<{ ok: true }>(`/tunnels/${id}`, { method: 'DELETE' }),
+    /**
+     * 轮换接入令牌。
+     *
+     * 旧令牌立即失效，主机端必须用新令牌重连；新令牌同样只返回一次。
+     */
+    rotateToken: (id: string) =>
+      request<{ tunnel: TunnelWithToken }>(`/tunnels/${id}/rotate-token`, { method: 'POST' }),
   },
 
   routes: {
@@ -233,14 +199,11 @@ export const api = {
     remove: (id: string) => request<{ ok: true }>(`/routes/${id}`, { method: 'DELETE' }),
   },
 
-  nodes: {
-    list: () => request<{ nodes: NodeRecord[] }>('/nodes'),
+  agents: {
+    list: () => request<{ agents: AgentRecord[] }>('/agents'),
   },
 
   system: {
-    relayHealth: (network = '') =>
-      request<{ ok: boolean; state?: string; connections?: number }>(
-        `/system/relay-health?network=${encodeURIComponent(network)}`,
-      ),
+    endpoints: () => request<Endpoints>('/system/endpoints'),
   },
 };

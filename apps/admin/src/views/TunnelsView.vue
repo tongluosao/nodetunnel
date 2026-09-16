@@ -2,13 +2,16 @@
 import { message, Modal } from 'ant-design-vue';
 import { onMounted, reactive, ref } from 'vue';
 
-import { api, ApiError, type Tunnel, type TunnelPort } from '@/api/client';
+import { api, ApiError, type PortProtocol, type Tunnel, type TunnelPort } from '@/api/client';
 
 /**
- * 隧道管理（需求 1.3 的管理入口）。
+ * 隧道管理。
  *
- * 每个隧道对应一个 EasyTier 组网。这里的「暴露端口」直接决定
- * 下发配置中 ACL 的放行规则：未列出的端口一律拒绝入站。
+ * 隧道现在只表示「一台主机端的接入登记」：服务端签发接入令牌，主机端凭令牌
+ * 连上信令房间，端口白名单决定本机哪些端口允许被转发。
+ *
+ * 令牌是唯一凭据且服务端只存哈希，所以创建/轮换后必须立刻把明文交给管理员 ——
+ * 弹窗一旦关闭，谁也无法再取回，只能重新轮换（旧令牌同时立即失效）。
  */
 
 const tunnels = ref<Tunnel[]>([]);
@@ -17,27 +20,26 @@ const saving = ref(false);
 const modalOpen = ref(false);
 const editingId = ref<string | undefined>(undefined);
 
-const configOpen = ref(false);
-const configText = ref('');
-const configLoading = ref(false);
-const configTitle = ref('');
+/** 一次性明文令牌弹窗。 */
+const tokenOpen = ref(false);
+const tokenValue = ref('');
+const tokenReason = ref('');
+const tokenTunnelName = ref('');
 
 const form = reactive<{
   name: string;
-  networkName: string;
-  networkSecret: string;
   ports: TunnelPort[];
   enabled: boolean;
 }>({
   name: '',
-  networkName: '',
-  networkSecret: '',
   ports: [],
   enabled: true,
 });
 
-/** 端口输入框的临时值（逗号分隔），提交时解析为端口数组。 */
-const portsInput = ref('');
+const protocolOptions: { label: string; value: PortProtocol }[] = [
+  { label: 'TCP', value: 'tcp' },
+  { label: 'UDP', value: 'udp' },
+];
 
 async function load(): Promise<void> {
   loading.value = true;
@@ -53,55 +55,78 @@ async function load(): Promise<void> {
 function openCreate(): void {
   editingId.value = undefined;
   form.name = '';
-  form.networkName = '';
-  form.networkSecret = '';
-  form.ports = [];
+  // 默认给出一行，避免管理员把「不放行任何端口」当成默认选项而误提交。
+  form.ports = [{ port: 8080, protocol: 'tcp' }];
   form.enabled = true;
-  portsInput.value = '';
   modalOpen.value = true;
 }
 
 function openEdit(tunnel: Tunnel): void {
   editingId.value = tunnel.id;
   form.name = tunnel.name;
-  form.networkName = tunnel.networkName;
-  // 出于安全考虑，后端不回传明文组网密钥；留空表示不修改。
-  form.networkSecret = '';
-  form.ports = [...tunnel.ports];
+  // 复制一份，避免编辑过程中直接改动列表里的对象。
+  form.ports = tunnel.ports.map((p) => ({ ...p }));
   form.enabled = tunnel.enabled;
-  portsInput.value = tunnel.ports
-    .filter((p) => p.protocol === 'tcp')
-    .map((p) => p.port)
-    .join(', ');
   modalOpen.value = true;
 }
 
+function addPort(): void {
+  form.ports.push({ port: 8080, protocol: 'tcp' });
+}
+
+function removePort(index: number): void {
+  form.ports.splice(index, 1);
+}
+
 /**
- * 解析端口输入。
+ * 校验并规范化端口白名单。
  *
- * 只接受 TCP：浏览器侧通过 HTTP 访问，UDP 无法承载页面请求，
- * 因此管理界面不提供 UDP 放行入口，避免误开放攻击面。
+ * 前端只拦「明显填错」的情况，真正的边界由服务端与主机端各自把关，
+ * 因此这里不能因为图省事就把非法端口交给后端。
  */
-function parsePorts(): TunnelPort[] {
-  const seen = new Set<number>();
+function normalizePorts(): TunnelPort[] {
+  const seen = new Set<string>();
   const result: TunnelPort[] = [];
 
-  for (const piece of portsInput.value.split(',')) {
-    const text = piece.trim();
-    if (text === '') {
+  for (const item of form.ports) {
+    const port = Number(item.port);
+    if (!Number.isInteger(port) || port < 1 || port > 65535) {
+      throw new Error(`端口「${String(item.port)}」不是 1-65535 之间的整数`);
+    }
+    const key = `${item.protocol}:${port}`;
+    if (seen.has(key)) {
       continue;
     }
-    const port = Number(text);
-    if (!Number.isInteger(port) || port < 1 || port > 65535) {
-      throw new Error(`端口「${text}」不是 1-65535 之间的整数`);
-    }
-    if (!seen.has(port)) {
-      seen.add(port);
-      result.push({ port, protocol: 'tcp' });
-    }
+    seen.add(key);
+    result.push({ port, protocol: item.protocol });
   }
 
-  return result.sort((a, b) => a.port - b.port);
+  return result.sort((a, b) =>
+    a.protocol === b.protocol ? a.port - b.port : a.protocol.localeCompare(b.protocol),
+  );
+}
+
+/** 展示一次性令牌。调用方保证这是明文唯一一次可见的时机。 */
+function revealToken(tunnelName: string, reason: string, token: string): void {
+  tokenTunnelName.value = tunnelName;
+  tokenReason.value = reason;
+  tokenValue.value = token;
+  tokenOpen.value = true;
+}
+
+function closeToken(): void {
+  tokenOpen.value = false;
+  // 立即清空，避免明文在内存与 DOM 里继续留存。
+  tokenValue.value = '';
+}
+
+async function copyToken(): Promise<void> {
+  try {
+    await navigator.clipboard.writeText(tokenValue.value);
+    message.success('接入令牌已复制到剪贴板');
+  } catch {
+    message.warning('复制失败，请手动选中文本复制');
+  }
 }
 
 async function submit(): Promise<void> {
@@ -109,18 +134,10 @@ async function submit(): Promise<void> {
     message.warning('请填写隧道名称');
     return;
   }
-  if (form.networkName.trim() === '') {
-    message.warning('请填写组网名称');
-    return;
-  }
-  if (editingId.value === undefined && form.networkSecret.trim() === '') {
-    message.warning('请填写组网密钥');
-    return;
-  }
 
   let ports: TunnelPort[];
   try {
-    ports = parsePorts();
+    ports = normalizePorts();
   } catch (error) {
     message.error(error instanceof Error ? error.message : '端口格式不正确');
     return;
@@ -129,30 +146,24 @@ async function submit(): Promise<void> {
   saving.value = true;
   try {
     if (editingId.value === undefined) {
-      await api.tunnels.create({
+      const created = await api.tunnels.create({
         name: form.name.trim(),
-        networkName: form.networkName.trim(),
-        networkSecret: form.networkSecret.trim(),
         ports,
         enabled: form.enabled,
       });
-      message.success('隧道已创建');
+      modalOpen.value = false;
+      await load();
+      revealToken(created.tunnel.name, '新建', created.tunnel.token);
     } else {
-      const payload: Record<string, unknown> = {
+      await api.tunnels.update(editingId.value, {
         name: form.name.trim(),
-        networkName: form.networkName.trim(),
         ports,
         enabled: form.enabled,
-      };
-      // 仅在填写了新密钥时才提交，避免把空值写入。
-      if (form.networkSecret.trim() !== '') {
-        payload.networkSecret = form.networkSecret.trim();
-      }
-      await api.tunnels.update(editingId.value, payload);
+      });
       message.success('隧道已更新');
+      modalOpen.value = false;
+      await load();
     }
-    modalOpen.value = false;
-    await load();
   } catch (error) {
     message.error(error instanceof ApiError ? error.message : '保存失败');
   } finally {
@@ -160,10 +171,29 @@ async function submit(): Promise<void> {
   }
 }
 
+function confirmRotate(tunnel: Tunnel): void {
+  Modal.confirm({
+    title: `确认轮换「${tunnel.name}」的接入令牌？`,
+    content: '轮换后旧令牌立即失效，使用旧令牌的主机端会掉线，需要用新令牌重新接入。',
+    okText: '轮换',
+    okType: 'danger',
+    cancelText: '取消',
+    async onOk() {
+      try {
+        const result = await api.tunnels.rotateToken(tunnel.id);
+        await load();
+        revealToken(result.tunnel.name, '轮换', result.tunnel.token);
+      } catch (error) {
+        message.error(error instanceof ApiError ? error.message : '轮换令牌失败');
+      }
+    },
+  });
+}
+
 function confirmRemove(tunnel: Tunnel): void {
   Modal.confirm({
     title: `确认删除隧道「${tunnel.name}」？`,
-    content: '该隧道下的所有路由与端口白名单都会被一并删除，且不可恢复。',
+    content: '该隧道下的所有路由都会被一并删除，已接入的主机端将立即失去连接，且不可恢复。',
     okText: '删除',
     okType: 'danger',
     cancelText: '取消',
@@ -179,29 +209,6 @@ function confirmRemove(tunnel: Tunnel): void {
   });
 }
 
-async function showConfig(tunnel: Tunnel): Promise<void> {
-  configTitle.value = `隧道「${tunnel.name}」的节点配置`;
-  configOpen.value = true;
-  configLoading.value = true;
-  configText.value = '';
-  try {
-    configText.value = await api.tunnels.config(tunnel.id);
-  } catch (error) {
-    configText.value = `获取配置失败：${error instanceof ApiError ? error.message : '未知错误'}`;
-  } finally {
-    configLoading.value = false;
-  }
-}
-
-async function copyConfig(): Promise<void> {
-  try {
-    await navigator.clipboard.writeText(configText.value);
-    message.success('配置已复制到剪贴板');
-  } catch {
-    message.warning('复制失败，请手动选择文本复制');
-  }
-}
-
 onMounted(load);
 </script>
 
@@ -211,7 +218,7 @@ onMounted(load);
       <div>
         <h2 class="nt-panel-card__title">隧道列表</h2>
         <p class="nt-hint" style="margin: 4px 0 0">
-          每个隧道是一个独立的 EasyTier 组网。只有此处列出的端口会被放行入站， 其余端口一律拒绝。
+          每个隧道对应一台主机端的接入登记。只有此处列出的端口会被放行入站， 其余端口一律拒绝。
         </p>
       </div>
       <a-button type="primary" @click="openCreate">新建隧道</a-button>
@@ -224,13 +231,13 @@ onMounted(load);
       size="middle"
       :pagination="false"
     >
-      <a-table-column title="名称" data-index="name" :width="160" />
-      <a-table-column title="组网名" data-index="networkName" :width="160">
+      <a-table-column title="名称" data-index="name" :width="180" />
+      <a-table-column title="令牌前缀" :width="180">
         <template #default="{ record }">
-          <span class="nt-mono">{{ record.networkName }}</span>
+          <span class="nt-mono">{{ record.tokenPrefix }}</span>
         </template>
       </a-table-column>
-      <a-table-column title="暴露端口" :width="200">
+      <a-table-column title="暴露端口" :width="240">
         <template #default="{ record }">
           <template v-if="record.ports.length === 0">
             <a-tag color="orange">未放行任何端口</a-tag>
@@ -249,11 +256,11 @@ onMounted(load);
           </a-tag>
         </template>
       </a-table-column>
-      <a-table-column title="操作" :width="220">
+      <a-table-column title="操作" :width="230">
         <template #default="{ record }">
           <a-space size="small">
-            <a-button size="small" @click="showConfig(record)">查看配置</a-button>
             <a-button size="small" @click="openEdit(record)">编辑</a-button>
+            <a-button size="small" @click="confirmRotate(record)">轮换令牌</a-button>
             <a-button size="small" danger @click="confirmRemove(record)">删除</a-button>
           </a-space>
         </template>
@@ -268,7 +275,7 @@ onMounted(load);
     v-model:open="modalOpen"
     :title="editingId === undefined ? '新建隧道' : '编辑隧道'"
     :confirm-loading="saving"
-    width="560px"
+    width="620px"
     ok-text="保存"
     cancel-text="取消"
     @ok="submit"
@@ -279,31 +286,28 @@ onMounted(load);
       </a-form-item>
 
       <a-form-item
-        label="组网名称"
-        help="EasyTier 的 network_name。隧道节点与浏览器节点必须一致才能互通。"
+        label="暴露端口白名单"
+        help="只有列出的端口会被放行，其余一律拒绝；留空表示不放行任何入站端口。"
       >
-        <a-input v-model:value="form.networkName" placeholder="home-net" />
-      </a-form-item>
-
-      <a-form-item
-        label="组网密钥"
-        :help="
-          editingId === undefined
-            ? 'EasyTier 的 network_secret，至少 16 位。保存后不再回显。'
-            : '留空表示不修改。填写新值将替换现有密钥。'
-        "
-      >
-        <a-input-password
-          v-model:value="form.networkSecret"
-          :placeholder="editingId === undefined ? '至少 16 位' : '留空则不修改'"
-        />
-      </a-form-item>
-
-      <a-form-item
-        label="暴露端口（TCP）"
-        help="逗号分隔，例如 80, 443, 8080。留空表示不放行任何入站端口。"
-      >
-        <a-input v-model:value="portsInput" placeholder="8080, 3000" />
+        <div class="nt-port-editor">
+          <div v-for="(item, index) in form.ports" :key="index" class="nt-port-editor__row">
+            <a-input-number
+              v-model:value="item.port"
+              :min="1"
+              :max="65535"
+              :controls="false"
+              placeholder="8080"
+              style="width: 150px"
+            />
+            <a-select
+              v-model:value="item.protocol"
+              :options="protocolOptions"
+              style="width: 110px"
+            />
+            <a-button size="small" danger @click="removePort(index)">移除</a-button>
+          </div>
+          <a-button size="small" @click="addPort">添加端口</a-button>
+        </div>
       </a-form-item>
 
       <a-form-item label="启用">
@@ -312,16 +316,40 @@ onMounted(load);
     </a-form>
   </a-modal>
 
-  <a-modal v-model:open="configOpen" :title="configTitle" width="720px" :footer="null">
-    <p class="nt-hint">
-      把下面的内容保存为隧道节点的 EasyTier 配置文件，或据此设置节点参数。
-      其中包含明文组网密钥，请勿分享给无关人员。
-    </p>
-    <a-spin :spinning="configLoading">
-      <pre class="nt-pre">{{ configText }}</pre>
-    </a-spin>
+  <a-modal
+    :open="tokenOpen"
+    :title="`${tokenTunnelName} 的接入令牌（${tokenReason}）`"
+    width="640px"
+    :mask-closable="false"
+    ok-text="我已安全保存，关闭"
+    :cancel-button-props="{ style: { display: 'none' } }"
+    @ok="closeToken"
+    @cancel="closeToken"
+  >
+    <a-alert
+      type="warning"
+      show-icon
+      message="接入令牌只显示这一次"
+      description="服务端只保存令牌的哈希，关闭本弹窗后无法再次查看。请立即复制并妥善保存；一旦丢失，只能重新轮换令牌，届时旧令牌会立即失效。"
+      style="margin-bottom: 16px"
+    />
+    <pre class="nt-pre">{{ tokenValue }}</pre>
     <div style="margin-top: 12px; text-align: right">
-      <a-button type="primary" @click="copyConfig">复制配置</a-button>
+      <a-button type="primary" @click="copyToken">复制令牌</a-button>
     </div>
   </a-modal>
 </template>
+
+<style scoped>
+.nt-port-editor {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.nt-port-editor__row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+</style>

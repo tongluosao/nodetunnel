@@ -43,7 +43,7 @@ async function submit(): Promise<void> {
     <div class="nt-card">
       <div class="nt-brand">
         <h1 class="nt-brand__title">NodeTunnel</h1>
-        <p class="nt-brand__subtitle">登录以管理隧道、路由与节点</p>
+        <p class="nt-brand__subtitle">登录以管理隧道、路由与主机端</p>
       </div>
 
       <a-form layout="vertical" @submit.prevent="submit">
