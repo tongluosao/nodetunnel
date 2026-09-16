@@ -158,23 +158,60 @@ ICE 的策略是固定的：**能打就打（Cone 场景），打不通就靠 TU
 
 需求意图完整实现，且**不需要 TURN**——因为回落路径就是中继本身。
 
-### 4.3 待实现组件
+### 4.3 落地结果（0.2.0 已实现）
 
-1. **信令房间（Durable Object）**：中转 SDP / ICE candidate。
-   Worker 是无状态的，WebSocket 无法在两个客户端间直接转发，必须用 DO 做房间。
-   可复用现有 DO 基础设施与命名方式（`src/relay/object-name.ts`）。
-2. **主机端桥接服务（Node.js）**：`RTCDataChannel` ←→ 本地 TCP。
-   需要验证 Node 侧 WebRTC 实现的可用性（如 `node-datachannel`，含原生依赖）。
-3. **浏览器门户改造**：新增 P2P 路径，优先尝试 DataChannel，
-   失败则回落到现有中继路径。
+本节原先列的是「待实现组件」。它们已在 0.2.0 全部落地，实际形态如下：
 
-### 4.4 验证顺序（必须先做第 1 步）
+1. **信令房间（Durable Object）** —— `apps/worker/src/signaling/room.ts`。
+   按 `tunnelId` 分房间，主机与访客各自以 tag 接入，用
+   `acceptWebSocket` + `serializeAttachment` 支持休眠唤醒。
+   房间只做转发与最基础的结构校验，**不解析 SDP、不校验令牌**：
+   鉴权属于业务规则，放在 `nodetunnel/signaling-gateway.ts`。
+2. **主机端桥接服务（Node.js）** —— `apps/agent/`。
+   选型定为 **werift**（纯 TypeScript，零原生依赖），而不是
+   `node-datachannel`：后者需要编译原生模块，会让「一条命令跑起来」变成
+   一件需要工具链的事。可行性已由 `scripts/poc/verify-datachannel.mjs` 验证。
+3. **浏览器门户改造** —— `apps/portal/src/transport/`。
+   新增 `TunnelTransport` 抽象，P2P 与中继是它的两个实现，
+   上层调用方不感知当前走哪条。
 
-1. **主机端 Node WebRTC 可用性验证**：两个 Node 进程之间建立 DataChannel
-   并跑通字节传输。**这是地基**——若 Node 侧 WebRTC 不可用，整个方案不成立。
-2. 信令 DO 与信令协议。
-3. 浏览器 ↔ 主机端真实打洞，实测 Cone 场景成功率。
-4. 回落逻辑与端到端联调。
+与原文预期不同的一处设计：**中继不再是「回落到现有中继路径」的次要选项**。
+实测本机为对称 NAT，打洞成功率低，因此中继被提升为一等公民，
+两条路径承载同一种报文、共用同一套分片约定。
+
+### 4.4 验证结果
+
+1. **主机端 Node WebRTC 可用性** —— 通过。`scripts/poc/verify-datachannel.mjs`
+   跑通双向 DataChannel 与 1 MiB 分片传输，字节完全一致。
+   过程中确认了两件事：单条 SCTP 消息上限是 64 KiB（超过直接抛
+   `max-message-size exceeded`），以及 werift 的事件 API 是 EventEmitter 风格、
+   事件名小写，`onopen` / `onmessage` 在订阅前是 `undefined`。
+2. **信令 DO 与信令协议** —— 通过。协议定义在
+   `packages/shared/src/signaling.ts`。
+3. **浏览器 ↔ 主机端真实打洞** —— **受网络条件限制未能取得正例**。
+   本机为对称 NAT（单一出口 IP，端口随目标变化），
+   对端无法预测本端映射端口，ICE 连接未能建立。
+   这符合预期（见 `scripts/poc/README.md` 的 NAT 判定结论），
+   也正是中继被设计为常态路径的原因。
+4. **回落逻辑与端到端联调** —— 通过。`scripts/e2e-check.mjs` 的 22 项断言
+   全部通过，其中包含「中继转发取回本机服务内容」这条主链路。
+
+### 4.5 STUN 选型
+
+**只用国内 STUN，不要用 Google STUN。**
+实测 `stun.l.google.com:19302` 在本机网络下解析到 `198.18.8.x`
+（RFC 2544 保留段，代理 TUN 的 fake-IP），且 UDP 无响应，配上只会拖慢协商。
+已验证可达的国内 STUN：
+
+| 服务器                   | 端口  |
+| ------------------------ | ----- |
+| `stun.miwifi.com`        | 3478  |
+| `stun.chat.bilibili.com` | 3478  |
+| `stun.hitv.com`          | 3478  |
+| `stun.douyucdn.cn`       | 18000 |
+
+`stun.cdnbye.com:3478` 曾可用，但在后续复测中超时，因此未纳入默认列表。
+可用性会随时间变化，`scripts/poc/diag-stun.mjs` 可随时复测。
 
 ---
 
@@ -192,6 +229,10 @@ ICE 的策略是固定的：**能打就打（Cone 场景），打不通就靠 TU
 | 每轮 600~800 包、下限 180              | `easytier-core/src/connectivity/hole_punch/udp/server.rs:225-228`             |
 | 扫描发送逻辑（每端口 3 包）            | `easytier-core/src/connectivity/hole_punch/udp/server.rs:776-789`             |
 
-`scripts/sync-upstream.mjs` 的 PRESERVE 列表已预留
-`runtime/src/rtc-host.ts` 与 `runtime/src/transport/`，供将来实现时新增文件
-而不被上游同步覆盖。
+上表中的路径指向已删除的 vendored 副本 `packages/easytier-js/`，
+行号是当时的状态，保留下来是为了让「为什么移除 EasyTier」这个结论可追溯。
+需要复核时请到只读参考目录 `其他项目代码/EasyTier/` 下按文件名查找，
+路径前缀相应改为 `easytier-core/`。
+
+`scripts/sync-upstream.mjs` 已随 vendored 副本一并删除，
+其 PRESERVE 列表也就不再需要维护。

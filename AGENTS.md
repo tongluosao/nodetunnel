@@ -10,13 +10,29 @@ NodeTunnel 是一个部署在 Cloudflare Workers 上的自托管内网穿透系�
 
 它做三件事：
 
-1. **EasyTier 中继**：所有 EasyTier 客户端都可把本服务作为初始节点接入，由它中转组网流量。中继逻辑完整复用上游 `easytier-js` 的 `@easytier/cloudflare` 包，不做修改。
-2. **隧道编排**：以 `tunnel`（一个 EasyTier 组网）为中心，管理其暴露端口白名单，并把 `/t/<slug>/` 的 HTTP 请求转发到该组网内被放行的服务。端口白名单会被渲染成「默认拒绝入站」的 ACL，未声明的端口一律拒绝。
-3. **节点接入**：普通 EasyTier 客户端把配置服务器指向本服务即可接入；浏览器用户也可以通过 WASM 在页面内运行一个 EasyTier 节点，加入同一虚拟局域网。
+1. **信令与中继**：一个 Durable Object 按隧道分房间，把浏览器访客与主机端
+   agent 配对。房间负责转发 WebRTC 信令（SDP / ICE 候选），并在打洞失败时
+   转发中继帧。
+2. **隧道编排**：以 `tunnel` 为中心管理接入令牌与端口白名单，并把
+   `/t/<slug>/` 的 HTTP 请求经房间转发到主机端被放行的服务。
+3. **主机端接入**：用户在自己内网机器上运行 `nodetunnel-agent`，用接入令牌
+   连出到 Worker。它主动连出，因此内网机器**不需要任何公网入口**。
 
-中心服务、管理后台、浏览器门户全部运行在 Cloudflare Worker 与静态托管之上，不依赖任何常驻服务器。**仅支持 HTTP**：浏览器无法在虚拟网内终止 TLS，因此被暴露的服务必须是 HTTP 明文服务。
+浏览器门户用原生 WebRTC 尝试与 agent 直连（P2P），失败则回落到中继。
 
-角色定位：这是一个**工程实现型**仓库。判断改动是否合理的第一标准是「能否跑通并被验证」，而不是「设计是否优雅」。
+中心服务、管理后台、浏览器门户全部运行在 Cloudflare Worker 与静态托管之上，
+不依赖任何常驻服务器。**仅支持 HTTP**：浏览器无法在隧道内终止 TLS，
+因此被暴露的服务必须是 HTTP 明文服务。
+
+角色定位：这是一个**工程实现型**仓库。判断改动是否合理的第一标准是
+「能否跑通并被验证」，而不是「设计是否优雅」。
+
+### 关于 P2P 的现实预期
+
+**中继是常态路径，不是异常兜底。** 实测本机所处网络为对称 NAT
+（单一出口 IP、端口随目标变化），对端无法预测本端映射端口，打洞成功率低。
+架构上 P2P 与中继对上层完全等价，因此这**不影响系统可用**，
+但不要因为「打洞没成功」就认为系统有 bug —— 请先确认中继路径本身是否正常。
 
 ---
 
@@ -31,19 +47,18 @@ pnpm install                 # 安装依赖（Node >= 20，pnpm 11.22.0）
 pnpm dev:worker              # 启动 Worker，监听 127.0.0.1:8787
 pnpm dev:admin               # 启动管理后台，监听 127.0.0.1:5173，/api 代理到 8787
 pnpm dev:portal              # 启动浏览器门户，监听 127.0.0.1:5174
+pnpm dev:agent --server http://127.0.0.1:8787 --token <令牌> --ports 8080
 ```
 
 首次启动 Worker 前需要创建本地密钥文件 `apps/worker/.dev.vars`（已被 gitignore 排除）：
 
 ```
 ADMIN_SESSION_SECRET=<至少 32 字节的随机字符串>
-NT_MASTER_KEY=<32 字节随机数据的 base64>
-NT_RELAY_NETWORK_NAME=nodetunnel-relay
-NT_RELAY_NETWORK_SECRET=<至少 16 位的随机字符串>
 NT_ADMIN_ORIGIN=http://127.0.0.1:5173
 ```
 
-`NT_MASTER_KEY` 必须是 **base64 编码且解码后恰好 32 字节**，否则加密组网密钥时会失败。
+只有 `ADMIN_SESSION_SECRET` 是必需的。**不再有 `NT_MASTER_KEY`** ——
+接入令牌由服务端随机生成，库里只存 SHA-256 摘要，没有需要加密的长期密钥。
 
 ### 数据库
 
@@ -52,15 +67,9 @@ pnpm db:migrate:local        # 应用迁移到本地 D1
 pnpm db:migrate:remote       # 应用迁移到远端 D1
 ```
 
-### WebAssembly 内核
-
-```bash
-pnpm build:wasm              # 编译浏览器 profile 的内核
-pnpm build:wasm:cf           # 编译 Cloudflare profile（中继用）的内核
-pnpm build:wasm:all          # 编译两者，并把浏览器内核搬运到 portal 的 public 目录
-```
-
-编译需要 Rust（`wasm32-wasip1` 目标）、Visual Studio 的 MSVC 工具链与 clang。详细前置条件见第 7 节。
+迁移文件内容一旦改动，本地 D1 里已记录的同名迁移**不会重新执行**。
+改了 `0001_init.sql` 之后必须删掉 `apps/worker/.wrangler/state` 再重新应用，
+否则本地库仍是旧表结构，表现为「代码没问题但查询报 no such column」。
 
 ### 质量检查
 
@@ -81,20 +90,16 @@ pnpm build                   # turbo 构建全部产物
 pnpm deploy                  # 部署 Worker（需先在 wrangler.jsonc 填入真实 D1 id）
 ```
 
-### 上游同步
+### 验证脚本
 
 ```bash
-pnpm sync:upstream           # 从只读参考目录同步 easytier-js
-pnpm sync:upstream --check   # 只校验差异，不写入
+node scripts/test-target-server.mjs   # 在 127.0.0.1:9911 启动一个 HTTP 目标服务
+node scripts/e2e-check.mjs            # 端到端验证（需先启动 Worker 与目标服务）
 ```
 
-### 测试用目标服务
-
-```bash
-node scripts/test-target-server.mjs   # 在 127.0.0.1:9911 启动一个 HTTP 服务
-```
-
-用于验证 `/t/<slug>/` 转发链路，不参与构建产物。
+`e2e-check.mjs` 是重构后最关键的验收脚本，它会实际创建隧道与路由、拉起
+agent、并断言「访客经中继取回本机服务内容」。**改动数据面后必须跑它。**
+它不参与构建产物。
 
 ---
 
@@ -103,7 +108,8 @@ node scripts/test-target-server.mjs   # 在 127.0.0.1:9911 启动一个 HTTP 服
 ### 测试栈
 
 - Vitest 3，各工作区独立配置（`vitest.config.ts`）。
-- Worker 与 portal 的测试运行在 `node` 环境，覆盖纯逻辑：协议渲染、输入校验、命名映射、HTTP 解析。
+- 所有测试运行在 `node` 环境，覆盖纯逻辑：端口策略、校验、房间命名、
+  分帧、分片、HTTP 报文解析。
 
 ### 运行
 
@@ -115,20 +121,21 @@ pnpm --filter @nodetunnel/worker test:watch      # 监听模式
 
 ### 现有覆盖
 
-| 工作区              | 文件                           | 覆盖内容                                        |
-| ------------------- | ------------------------------ | ----------------------------------------------- |
-| `packages/protocol` | `test/acl.test.ts`             | ACL 渲染的默认拒绝不变式                        |
-| `packages/protocol` | `test/config.test.ts`          | 隧道节点与浏览器节点的配置渲染                  |
-| `apps/worker`       | `test/config-security.test.ts` | 下发的 TOML 必须默认拒绝入站；管理 API 输入校验 |
-| `apps/worker`       | `test/relay-naming.test.ts`    | 组网名到 Durable Object 名称的映射              |
-| `apps/portal`       | `test/tunnel-http.test.ts`     | HTTP/1.1 响应解析（含 chunked 与畸形输入）      |
+| 工作区        | 文件                               | 覆盖内容                                     |
+| ------------- | ---------------------------------- | -------------------------------------------- |
+| `apps/worker` | `test/security-invariants.test.ts` | 端口白名单默认拒绝、协议严格性、地址范围限制 |
+| `apps/worker` | `test/signaling-room-name.test.ts` | 隧道 ID 到 Durable Object 名称的映射         |
+| `apps/portal` | `test/transport.test.ts`           | 行分帧、分片还原、HTTP 请求构造与响应解析    |
+| `apps/agent`  | `test/agent.test.ts`               | 参数解析、WebSocket 地址推导、本地转发白名单 |
 
 ### 测试约定
 
-- **安全不变式必须有测试守护。** 「入站默认拒绝」「只放行白名单端口」「转发链拒绝」这三条一旦被改坏，必须立刻有测试失败。
+- **安全不变式必须有测试守护。** 「默认拒绝端口」「只连回环地址」
+  「拒绝公网目标」这三条一旦被改坏，必须立刻有测试失败。
 - 新增解析类逻辑（协议、报文、编码）必须附带畸形输入的报错测试。
 - 测试名与断言注释使用中文，说明「这条断言在守护什么」。
-- 需要加载 WASM 或 Workers 运行时的集成测试尚未引入；纯逻辑保持与运行时解耦，便于单独测试。
+- 需要 Workers 运行时的集成测试尚未引入；纯逻辑保持与运行时解耦，便于单独测试。
+  数据面的正确性由 `scripts/e2e-check.mjs` 在真实 `wrangler dev` 下验证。
 
 ---
 
@@ -144,34 +151,30 @@ nodetunnel/
 │   │   │   ├── home.ts            # 首页与 /health
 │   │   │   ├── env.d.ts           # Env 接口
 │   │   │   ├── admin/             # 业务层：管理 API 与认证
-│   │   │   ├── nodetunnel/        # 业务层：隧道、路由、节点、地址推导
+│   │   │   ├── nodetunnel/        # 业务层：隧道、路由、agent、地址推导、信令接入
 │   │   │   ├── http-tunnel/       # 业务层：/t/<slug>/ 转发
-│   │   │   ├── config-server/     # 基础层：WebSocket JSON-RPC 配置服务器
-│   │   │   ├── relay/             # 基础层：EasyTier 中继与 DO 命名
-│   │   │   ├── db/                # 基础层：D1 访问、心跳落库
+│   │   │   ├── signaling/         # 基础层：信令房间 Durable Object
+│   │   │   ├── db/                # 基础层：D1 访问
 │   │   │   └── lib/               # 基础层：错误、日志、加密、会话
 │   │   ├── test/
 │   │   └── wrangler.jsonc
+│   ├── agent/                     # 主机端桥接服务（Node + werift）
+│   │   ├── scripts/build.mjs      # esbuild 打包为单文件入口
+│   │   └── src/{config,index,local-forward,log,peer,signaling-client}.ts
 │   ├── admin/                     # 管理后台（Vue 3 + Vite + Ant Design Vue）
 │   │   └── src/{api,layouts,router,stores,styles,views}/
 │   └── portal/                    # 浏览器门户（Vue 3 + Vite）
-│       ├── public/easytier_core.wasm   # 由 build:wasm:all 搬运
-│       ├── scripts/copy-wasm.mjs
-│       ├── src/easytier/          # 浏览器内 EasyTier 节点与 HTTP-over-tunnel
-│       └── test/
+│       ├── src/http/              # HTTP 报文构造与解析
+│       ├── src/signaling/         # 信令客户端
+│       ├── src/transport/         # P2P 与中继两条传输、行分帧
+│       └── src/tunnel-client.ts   # 串起「信令 → P2P → 回落中继 → 发请求」
 ├── packages/
-│   ├── shared/                    # 领域类型、校验、常量（零依赖）
-│   ├── protocol/                  # ACL 与配置渲染、配置服务器 JSON-RPC
-│   └── easytier-js/               # vendored 上游代码（见第 6 节）
-│       ├── runtime/               # 共享 WASM 运行时与宿主实现
-│       ├── browser/               # 浏览器适配
-│       ├── cloudflare/            # Cloudflare Workers 适配
-│       └── UPSTREAM.md            # 同步来源与保留清单（由脚本生成）
+│   └── shared/                    # 领域类型、校验、常量、信令协议、端口策略（零依赖）
 ├── scripts/
-│   ├── build-wasm.ps1             # 编译 EasyTier 内核为 wasm32-wasip1
-│   ├── sync-upstream.mjs          # 从只读参考目录同步 easytier-js
-│   └── test-target-server.mjs     # 测试用 HTTP 目标服务
-├── docs/webrtc-p2p-status.md      # WebRTC P2P 的调研结论与阻塞点
+│   ├── e2e-check.mjs              # 端到端验证
+│   ├── test-target-server.mjs     # 测试用 HTTP 目标服务
+│   └── poc/                       # 阶段 0 可行性验证（独立依赖，见其 README）
+├── docs/webrtc-p2p-status.md      # WebRTC 方案定型的调研过程与结论
 └── 其他项目代码/                   # 只读参考代码，绝不修改
 ```
 
@@ -181,11 +184,11 @@ nodetunnel/
 
 - **语言**：TypeScript strict，ESM，`verbatimModuleSyntax` 开启。类型导入必须写 `import type`。
 - **注释与文案**：全部使用中文。注释解释**为什么**这样做（尤其是安全相关的取舍），不重述代码在做什么。
-- **命名**：变量与函数用英文，领域概念（隧道、路由、节点、端口白名单）保持与中文注释一致。
+- **命名**：变量与函数用英文，领域概念（隧道、路由、主机端、端口白名单）保持与中文注释一致。
 - **格式化**：Prettier 统一处理，不要手工对齐。提交前跑 `pnpm format`。
 - **类型**：禁止 `any`（ESLint 报错）。用 `unknown` 加显式收窄。
 - **错误处理**：业务错误一律通过 `AppError` + `ErrorCode` 抛出，由顶层统一转换为结构化 JSON。不要在各处自行拼装错误响应。
-- **日志**：使用 `src/lib/logger.ts`，它会自动脱敏敏感字段。禁止 `console.log` 输出密钥、密码或完整配置。
+- **日志**：使用 `src/lib/logger.ts`（Worker）或 `apps/agent/src/log.ts`（agent），两者都会自动脱敏敏感字段。禁止 `console.log` 输出密钥、密码或完整配置。
 - **路径别名**：`@/` 指向各应用的 `src/`（仅在 admin 与 portal 中配置）。
 
 ### 三层边界
@@ -196,89 +199,98 @@ nodetunnel/
 接入层  →  业务层  →  基础层
 ```
 
-- **接入层**：`apps/worker/src/index.ts`、`apps/admin`、`apps/portal`。只做分发与展示，不含业务规则。
+- **接入层**：`apps/worker/src/index.ts`、`apps/admin`、`apps/portal`、`apps/agent`。只做分发与展示，不含业务规则。
 - **业务层**：`apps/worker/src/{nodetunnel,admin,http-tunnel}`。编排用例，决定「允许什么、拒绝什么」。
-- **基础层**：`apps/worker/src/{db,relay,config-server,lib}`、`packages/**`。提供能力，不认识业务概念。
+- **基础层**：`apps/worker/src/{db,signaling,lib}`、`packages/**`。提供能力，不认识业务概念。
 
 规则：
 
-1. **基础层不得导入业务层或接入层。** 需要共享的类型下沉到 `packages/shared`。这条规则已经抓到过一次真实违规（配置服务器曾直接导入 `nodetunnel/node-registry`，后把心跳实现下沉到 `db/node-heartbeat.ts`）。
+1. **基础层不得导入业务层或接入层。** 需要共享的类型下沉到 `packages/shared`。
+   这条规则已经抓到过一次真实违规：信令房间最初把「校验接入令牌」写在自己
+   内部（属于业务规则），后来拆成 `signaling/room.ts`（纯转发）+
+   `nodetunnel/signaling-gateway.ts`（鉴权与路由解析）。
+   房间需要的请求头常量下沉到 `signaling/headers.ts`，
+   这样业务层不必为了取一个常量去导入 DO 类。
 2. **业务层不得从 `cloudflare:workers` 导入 `DurableObject`。** 需要 Durable Object 能力时，通过基础层暴露的接口访问。
 3. 出现循环依赖时，说明分层放错了位置，应下沉共享类型而不是绕过规则。
 
 ---
 
-## 6. 上游代码与只读参考目录
+## 6. 通信协议
 
-### `其他项目代码/` 是只读的
+信令与中继共用**一条** WebSocket（agent ↔ Worker），用消息的 `type` 字段区分。
+定义在 `packages/shared/src/signaling.ts`，它是唯一的线协议事实来源。
 
-该目录存放参考实现（EasyTier 源码、easytier-web、vue-vben-admin）。
+| 类型              | 方向            | 用途                              |
+| ----------------- | --------------- | --------------------------------- |
+| `hello` / `ready` | agent ↔ Worker  | 接入与接受                        |
+| `ping` / `pong`   | 双向            | 保活（Cloudflare 会回收空闲连接） |
+| `connect`         | Worker → agent  | 有访客进入房间                    |
+| `connected`       | Worker → portal | 会话已建立，可开始交换 SDP        |
+| `peer-gone`       | Worker → 任一方 | 对端离开                          |
+| `description`     | 双向            | SDP（透传，Worker 不解析）        |
+| `candidate`       | 双向            | 单个 ICE 候选（透传）             |
+| `relay-request`   | portal → agent  | 经中继发起一次 HTTP 请求          |
+| `relay-response`  | agent → portal  | 中继响应，**可能分片**            |
+| `relay-abort`     | 双向            | 中止进行中的请求                  |
+| `error`           | 双向            | 协议级错误                        |
 
-**绝对禁止修改或写入其中任何文件。** 它被 `.gitignore` 排除，也不参与构建。需要借鉴代码时，复制到本仓库的对应位置再改。
+### 分片
 
-已验证的保护措施：WASM 编译通过 `CARGO_TARGET_DIR` 把构建缓存重定向到 `.wasm-build/target`，因此不会在参考目录里生成 `target/`。
+响应体可能远大于单条消息上限，因此按 `RELAY_CHUNK_BYTES`（16 KiB）分片，
+最后一片带 `last: true`。P2P 与中继两条路径**共用这套约定**。
 
-### `packages/easytier-js/` 是 vendored 上游代码
+SCTP 单条消息的硬上限是 64 KiB，超过会直接抛
+`max-message-size exceeded`。16 KiB 留出了充足余量。
 
-由 `pnpm sync:upstream` 从参考目录同步而来。原则是**最小改动复用上游**：
+### DataChannel 的行分帧
 
-- 不做格式化、不重命名、不重构。
-- `.prettierignore` 与 ESLint 都对该目录放宽，避免每次同步产生大量纯格式差异。
-- 目前仅有 5 处必要的一行改动，全部登记在 `sync-upstream.mjs` 的 `PRESERVE` 列表中，同步时不会被覆盖：
-  - 三个 `package.json`：改为 `private: true` + `workspace:*`，exports 直指 TS 源码；
-  - `browser/tsconfig.json` 与 `cloudflare/tsconfig.json`：`include` 补上 `../runtime/src/jspi.d.ts`，否则从这两个包发起类型检查会找不到 `WebAssembly.Suspending`。
-- `PRESERVE` 中还预留了 `runtime/src/rtc-host.ts` 与 `runtime/src/transport/`，供将来实现 WebRTC 时新增文件而不被同步覆盖。
+DataChannel 保序，但**不保证「一次 send 对应一次 message」**：
+多个逻辑消息可能被合并进一条消息。因此 P2P 路径用换行分帧
+（`apps/portal/src/transport/line-framing.ts`），必须能处理任意切分 ——
+该模块的测试包含「逐字符喂入」这一用例。
 
-**修改上游代码前必须先在 `PRESERVE` 中登记**，否则下次同步会静默丢失你的改动。
-
-### 功能现状与限制
-
-- 上游的宿主实现 `runtime/src/websocket-host.ts` **只实现了 WebSocket 隧道与 TCP 数据面**；所有 UDP 宿主函数（`start_udp_recv`、`try_udp_send`、`start_udp_bind` 等 7 个）都直接返回 `HOST_UNSUPPORTED`。
-- `runtime/src/config.ts` 中 `disable_p2p = true` 位于公共尾部，对两个 profile 都生效。
-- 因此**浏览器间 WebRTC P2P 直连目前不可用**，所有流量经中继转发。完整证据链与后续路线见 `docs/webrtc-p2p-status.md`。
+选 JSON + 换行而不是二进制长度头，是为了让两条路径承载**同一种报文**：
+主机端只需要一份请求处理逻辑。代价是 base64 约 33% 的体积开销。
 
 ---
 
-## 7. 环境与配置
+## 7. 安全模型
 
-### 必需密钥（fail-closed）
+### 端口白名单：两道独立防线
 
-Worker 在缺少必需密钥时**拒绝工作**，不会回退到默认值——使用默认密钥意味着任何人都能伪造管理会话或解密组网密钥。
+这是本项目的核心安全边界，实现在 `packages/shared/src/policy.ts`，
+由 Worker 与 agent **各自独立执行一次**：
 
-| 变量                      | 要求                       | 用途                          |
-| ------------------------- | -------------------------- | ----------------------------- |
-| `ADMIN_SESSION_SECRET`    | ≥ 32 字节                  | 管理员会话令牌的 HMAC 密钥    |
-| `NT_MASTER_KEY`           | base64，解码后恰好 32 字节 | AES-GCM 加密 `network_secret` |
-| `NT_RELAY_NETWORK_NAME`   | 非空                       | 中继自身的组网名              |
-| `NT_RELAY_NETWORK_SECRET` | 非空                       | 中继自身的组网密钥            |
-| `NT_ADMIN_ORIGIN`         | 可选                       | 管理后台的 CORS 白名单来源    |
+- Worker 侧：`admin/router.ts` 在**创建路由时**就拒绝非内网目标地址，
+  `http-tunnel/proxy.ts` 在转发前再校验端口；
+  信令房间也会拦掉访客伪造的 `targetPort`。
+- agent 侧：`local-forward.ts` 再校验一次端口白名单，
+  并把目标**固定为 `127.0.0.1`**，不采用请求里传来的 host。
 
-本地开发放在 `apps/worker/.dev.vars`；生产用 `wrangler secret put <名称>`。
+为什么要重复判断：agent 才是真正持有「能否连到本机某个端口」这一能力的一方。
+如果只有 Worker 判断，一旦 Worker 校验被绕过、或将来出现不经过 Worker 的
+入站路径（P2P 直连就是一条），攻击面会直接落到用户内网。
 
-### WASM 编译前置
+### 目标地址限制
 
-编译 EasyTier 内核需要：
+只允许回环地址与 RFC1918 私有网段（`isTargetHostAllowed`）。
+**这条必须保持**：允许任意目标会让本系统变成可被滥用的开放代理。
 
-- Rust 工具链 + `rustup target add wasm32-wasip1`；
-- Visual Studio 的 MSVC 工具链（编译 proc-macro 与 build script 的宿主代码）；
-- **clang**（`ring` 在 `wasm32-wasip1` 目标下需要它交叉编译 C/汇编）。
+### 接入令牌
 
-`scripts/build-wasm.ps1` 会自动处理两件容易踩坑的事：
+- 服务端随机生成，格式 `nt_` + 43 字符。
+- 库里只存 SHA-256 摘要与 8 位前缀，**明文仅在创建/轮换时返回一次**。
+- 用 `Authorization: Bearer` 头传递，不走查询参数 —— 查询参数会进入
+  各级访问日志与浏览器历史。
+- 令牌用 SHA-256 而非 PBKDF2：它是 256 位随机值，不存在字典攻击面，
+  加盐慢哈希只会给每次连接白白增加开销。
 
-1. **MSVC 环境不能写成一行 `cmd /c "call vcvars64.bat && set X=%X%;..."`**。在一行命令中 `%X%` 会在 vcvars 执行**之前**就被展开，导致 vcvars 设置的值被覆盖（表现为找不到 `vcruntime.h`）。脚本改为生成临时 `.cmd` 文件并开启延迟展开。
-2. **批处理文件以 UTF-8 写出**，否则中文路径「其他项目代码」会被按当前代码页解码成 `??????`。
+### 默认拒绝
 
-### Cloudflare 侧的兼容标志
-
-`wrangler.jsonc` 只使用 `["nodejs_compat"]`，与上游 `easytier-js/cloudflare/wrangler.jsonc` 保持一致。
-
-**不要添加 JSPI 相关标志。** workerd 并不存在名为 `jspi` 或 `experimental_wasm_jspi` 的 compatibility flag，加上会导致「No such compatibility flag」而完全无法启动。JSPI 调度用于浏览器 profile，Cloudflare 适配层不依赖它。
-
-### Durable Object
-
-- 组网隔离通过对象名实现：组网名经 FNV-1a 哈希映射为 `net-<hex>`（见 `src/relay/object-name.ts`）。该函数是纯函数，被单元测试覆盖。
-- DO 类必须从入口文件 `src/index.ts` 导出，否则 Wrangler 报「not exported in your entrypoint」。
-- **Worker 模块的每个具名导出都必须是 handler 或 Durable Object 类。** 导出普通常量会导致运行时启动失败。
+- agent 未指定 `--ports` 时白名单为空，**拒绝一切端口**。
+  配置漏填的后果应当是「用不了」，而不是「内网暴露」。
+- 未认证访问管理 API 一律 401；主机端离线时中继明确返回 503，不静默降级。
 
 ---
 
@@ -286,7 +298,8 @@ Worker 在缺少必需密钥时**拒绝工作**，不会回退到默认值——
 
 ### 统一模型
 
-所有业务错误通过 `AppError`（`src/lib/errors.ts`）抛出，携带 `ErrorCode` 与可选的中文消息、字段名。顶层 `handleTopLevelError` 负责转换：
+所有业务错误通过 `AppError`（`src/lib/errors.ts`）抛出，携带 `ErrorCode`
+与可选的中文消息、字段名。顶层 `handleTopLevelError` 负责转换：
 
 - `AppError` → 对应 HTTP 状态码 + `{ error: { code, message, details } }`；
 - 其他异常 → 记录完整堆栈到日志，但**只向客户端返回通用错误**，避免泄露内部结构。
@@ -295,13 +308,17 @@ Worker 在缺少必需密钥时**拒绝工作**，不会回退到默认值——
 
 - **新增错误码时必须三处同步**：`ErrorCode` 常量对象、`ERROR_STATUS` 状态码映射、面向用户的文案。
 - **不要把底层异常直接暴露给客户端。** 数据库或网络错误需要包装成有意义的业务错误。
-- **安全相关的失败要 fail-closed。** 校验不通过时拒绝服务，而不是降级放过。密钥缺失、ACL 未配置、会话无效都属于这一类。
-- **前端错误文案来自服务端。** 登录失败不区分「用户不存在」与「密码错误」，避免账号枚举；前端也不应自行推断具体原因。
+- **安全相关的失败要 fail-closed。** 校验不通过时拒绝服务，而不是降级放过。
+  密钥缺失、白名单未配置、会话无效都属于这一类。
+- **前端错误文案来自服务端。** 登录失败不区分「用户不存在」与「密码错误」，
+  避免账号枚举；前端也不应自行推断具体原因。
 
 ### 可观测性
 
-- 使用 `logger` 的分级方法。`logger.error` 用于需要人工介入的情况，`logger.warn` 用于可预期的拒绝。
+- 使用 `logger` 的分级方法。`logger.error` 用于需要人工介入的情况，
+  `logger.warn` 用于可预期的拒绝。
 - 日志字段用英文键名，值可以是中文。敏感字段由 logger 自动脱敏。
+- agent 的日志会脱敏 `token` / `authorization` / `secret` / `password` 字段。
 
 ---
 
@@ -322,17 +339,29 @@ pnpm check
 
 ### 验证标准
 
-- **不要声称「应该能工作」。** 涉及运行时的改动必须在 `pnpm dev:worker` 下实际请求验证。
-- 改动了配置下发或 ACL 逻辑时，必须实测一次客户端拉取到的 TOML，确认「默认拒绝入站」仍然成立。
-- 改动了中继或 Durable Object 时，必须确认 `GET /health` 返回 `relay.state = "running"`。
-- 构建类改动必须跑一次 `pnpm build`，确认 `wrangler deploy --dry-run` 通过（它会验证 WASM 能否正确打包）。
+- **不要声称「应该能工作」。** 涉及运行时的改动必须实际请求验证。
+- 改动了数据面（信令房间、中继转发、agent 转发）时，必须跑一次
+  `node scripts/e2e-check.mjs` 并确认全部断言通过。
+- 改动了端口策略或转发目标逻辑时，必须确认 `security-invariants.test.ts` 仍然通过，
+  并实测一次非白名单端口确实被拒。
+- 构建类改动必须跑一次 `pnpm build`，确认 `wrangler deploy --dry-run` 通过。
 
-### Git 工作流
+### 已知的构建陷阱
 
-- 提交信息使用**中文**，遵循 Conventional Commits：`feat:` / `fix:` / `docs:` / `chore:` / `refactor:`。
-- 首行简明扼要，正文说明**为什么**改，以及验证了什么。
-- 一个提交只做一件事。修复与重构分开提交。
-- 提交前确认 `git status` 中没有意外的文件（尤其是 `其他项目代码/`、`.dev.vars`、构建产物）。
+- **`apps/agent` 必须打包后运行，不能直接跑 TS 源码。**
+  Node 的 `--experimental-strip-types` 只删类型、不重写模块路径，
+  不会把 `./types.js` 映射回 `./types.ts`，而 `@nodetunnel/shared`
+  按约定直接以 TS 源码被消费、内部使用 `.js` 后缀互相引用。
+  直接运行必然 `ERR_MODULE_NOT_FOUND`（已实测确认 Node 无此回退）。
+  因此用 esbuild 打成 `dist/agent.mjs`。
+- **strip-only 模式不支持参数属性**（`constructor(private readonly x)`）、
+  `enum`、`namespace`。agent 源码里构造函数字段一律显式声明。
+  打包后其实不再受此限制，但保持显式声明可以让源码在两种运行方式下都成立。
+- **Worker 模块的每个具名导出都必须是 handler 或 Durable Object 类。**
+  导出普通常量会导致运行时启动失败。
+- **DO 类必须从入口文件 `src/index.ts` 导出**，否则 Wrangler 报
+  「not exported in your entrypoint」。
+- **Durable Object 迁移用 `new_sqlite_classes`**，不能用 `new_classes`。
 
 ---
 
@@ -340,16 +369,31 @@ pnpm check
 
 已完成并经过实测：
 
-- Worker 中继（Durable Object 内运行 EasyTier WASM 内核，`/health` 返回 `state: "running"`）；
-- 配置服务器（WebSocket JSON-RPC，处理 `Heartbeat` 与 `GetFeature`）；
-- 客户端配置下发（`/api/v1/machines/:machine-id/networks/config/:inst-id`，与 easytier-web 路由对齐）；
-- 管理 API 与安全不变式（二次初始化被拒、未认证被拒、错误密码被拒）；
-- 管理后台（初始化、登录、仪表盘、隧道、路由、节点、设置）；
-- HTTP 隧道转发（`/t/<slug>/` → 虚拟网内服务，已端到端验证）；
-- 浏览器门户（页面内运行 EasyTier 节点 + HTTP-over-tunnel）。
+- 信令房间 Durable Object（按隧道分房间，支持休眠唤醒）；
+- 接入令牌模型（一次性明文、SHA-256 摘要存储、轮换）；
+- 管理 API 与安全不变式（二次初始化被拒、未认证被拒、错误密码被拒、
+  公网目标地址被拒）；
+- 管理后台（初始化、登录、仪表盘、隧道、路由、主机端、设置）；
+- 主机端 agent（信令接入、中继转发、P2P answerer、保活与重连）；
+- HTTP 隧道转发（`/t/<slug>/` → 主机端本机服务，已端到端验证）；
+- 浏览器门户（WebRTC P2P 优先，失败回落中继）；
+- `scripts/e2e-check.mjs` 22 项断言全部通过。
 
 已知限制：
 
 - 仅支持 HTTP，被暴露的服务必须自行处理 TLS 终止；
-- WebRTC P2P 直连不可用，所有流量经中继转发（见 `docs/webrtc-p2p-status.md`）；
+- 实测网络为对称 NAT，P2P 打洞成功率低，实际以中继为主（见第 1 节）；
+- `DashboardStats.activeConnections` 目前等于 `onlineAgentCount`，
+  尚未把各房间的实时连接数汇总上来；
+- 管理后台的端口编辑器保留了 tcp/udp 选项，但当前数据面只走 HTTP（即 TCP），
+  UDP 白名单暂无实际作用；
 - 尚未引入基于 `@cloudflare/vitest-pool-workers` 的 Workers 运行时集成测试。
+
+### 版本历史
+
+- **0.2.0**：移除 EasyTier 与 WASM 内核，改为 WebRTC 信令 + 接入令牌模型。
+  原因见 `docs/webrtc-p2p-status.md`：上游 `easytier-js` 的宿主实现里
+  7 个 UDP 宿主函数全部返回 `HOST_UNSUPPORTED`，且 `disable_p2p = true`
+  对两个 profile 都生效，浏览器侧 P2P 无从实现；同时安全边界依赖内核 ACL，
+  内核一旦不再承担数据面，这条边界就消失了。
+- **0.1.0**：基于 EasyTier 中转的初版。
