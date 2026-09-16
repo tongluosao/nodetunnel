@@ -1,20 +1,17 @@
 {
   "name": "@nodetunnel/portal",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "type": "module",
-  "description": "NodeTunnel 浏览器门户：在浏览器内运行 EasyTier 节点并直连隧道服务",
+  "description": "NodeTunnel 浏览器门户：用原生 WebRTC 直连主机端，失败时回落中继",
   "scripts": {
     "dev": "vite",
     "build": "vite build",
     "preview": "vite preview",
     "typecheck": "vue-tsc --noEmit",
-    "test": "vitest run --passWithNoTests",
-    "prepare:wasm": "node scripts/copy-wasm.mjs"
+    "test": "vitest run --passWithNoTests"
   },
   "dependencies": {
-    "@easytier/browser": "workspace:*",
-    "@easytier/runtime": "workspace:*",
     "@nodetunnel/shared": "workspace:*",
     "vue": "^3.5.13"
   },

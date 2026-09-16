@@ -1,26 +1,22 @@
-import type { EasyTierTcpStream } from '@easytier/runtime';
-
 /**
- * 通过 EasyTier 的 TCP 流发送 HTTP/1.1 请求。
+ * HTTP/1.1 报文的构造与解析。
  *
- * 需求 3 的最终环节：浏览器节点加入虚拟网后，直接与该网内的
- * 目标服务建立 TCP 连接，并在其上手工收发 HTTP/1.1 报文。
+ * 为什么手工实现而不复用 fetch：
+ *   浏览器的 fetch 只能走浏览器自身的网络栈，无法在 WebRTC DataChannel
+ *   上收发字节；要穿过隧道就必须自己控制字节流。
  *
- * 为什么手工实现 HTTP 而不复用 fetch：
- *   fetch 无法在浏览器中指定任意源地址的 TCP 连接，
- *   它只能走浏览器自身的网络栈；要穿过虚拟网必须自己控制字节流。
- *
- * 限制与取舍：
- *   1. 只支持 HTTP/1.1：虚拟网内的服务通常是内网明文服务；
- *      HTTPS 需要在隧道侧自行终止 TLS。
- *   2. 使用 Connection: close，读到 EOF 即为报文结束，
- *      避免实现完整的分块传输与 keep-alive 状态机。
+ * 取舍：
+ *   1. 只支持 HTTP/1.1：被暴露的服务是内网明文服务，HTTPS 需由主机端终止 TLS；
+ *   2. 使用 Connection: close + 显式 Content-Length，读到声明长度即结束，
+ *      避免实现完整的 keep-alive 状态机；
  *   3. 不自动跟随重定向：由调用方决定，避免把凭据带到其他主机。
+ *
+ * 本模块是纯函数，不依赖浏览器 API，因此可以在 node 环境下直接测试。
  */
 
-export interface TunnelHttpRequest {
+export interface HttpRequest {
   method: string;
-  /** 目标服务上的路径（以 / 开头）。 */
+  /** 目标服务上的路径（以 / 开头，可含查询串）。 */
   path: string;
   /** 目标主机名，仅用于 Host 头。 */
   hostHeader: string;
@@ -28,47 +24,22 @@ export interface TunnelHttpRequest {
   body?: Uint8Array;
 }
 
-export interface TunnelHttpResponse {
+export interface HttpResponse {
   status: number;
   statusText: string;
   headers: Record<string, string>;
   body: Uint8Array;
 }
 
-/** 单次响应的最大字节数，防止恶意服务耗尽浏览器内存。 */
-const MAX_RESPONSE_BYTES = 32 * 1024 * 1024;
-
-/** 读取超时（毫秒）。 */
-const READ_TIMEOUT_MS = 30_000;
-
-/**
- * 在给定的 TCP 流上执行一次 HTTP/1.1 请求并解析响应。
- *
- * 流在使用后会被关闭（Connection: close 语义）。
- */
-export async function requestOverTunnel(
-  stream: EasyTierTcpStream,
-  request: TunnelHttpRequest,
-): Promise<TunnelHttpResponse> {
-  try {
-    const raw = buildRequestBytes(request);
-    await stream.write(raw);
-    await stream.shutdownWrite();
-
-    const responseBytes = await readAll(stream);
-    return parseResponse(responseBytes);
-  } finally {
-    await stream.close().catch(() => undefined);
-  }
-}
+const textEncoder = new TextEncoder();
+const latin1Decoder = new TextDecoder('latin1');
 
 /** 组装 HTTP/1.1 请求字节。 */
-function buildRequestBytes(request: TunnelHttpRequest): Uint8Array {
+export function buildRequestBytes(request: HttpRequest): Uint8Array {
   const headers: Record<string, string> = {
     Host: request.hostHeader,
-    // 使用短连接：读到 EOF 即为响应结束，无需实现完整的分块状态机。
     Connection: 'close',
-    'User-Agent': 'nodetunnel-portal/1.0',
+    'User-Agent': 'nodetunnel-portal/2.0',
     ...request.headers,
   };
 
@@ -82,7 +53,7 @@ function buildRequestBytes(request: TunnelHttpRequest): Uint8Array {
   }
   lines.push('', '');
 
-  const headBytes = new TextEncoder().encode(lines.join('\r\n'));
+  const headBytes = textEncoder.encode(lines.join('\r\n'));
   if (request.body === undefined) {
     return headBytes;
   }
@@ -93,53 +64,30 @@ function buildRequestBytes(request: TunnelHttpRequest): Uint8Array {
   return combined;
 }
 
-/** 持续读取直到 EOF 或超出上限。 */
-async function readAll(stream: EasyTierTcpStream): Promise<Uint8Array> {
-  const chunks: Uint8Array[] = [];
-  let total = 0;
-  const deadline = Date.now() + READ_TIMEOUT_MS;
-
-  for (;;) {
-    if (Date.now() > deadline) {
-      throw new Error(`读取隧道响应超时（${READ_TIMEOUT_MS / 1000} 秒）`);
-    }
-
-    const result = await stream.read();
-    if (result.data.byteLength > 0) {
-      chunks.push(result.data);
-      total += result.data.byteLength;
-      if (total > MAX_RESPONSE_BYTES) {
-        throw new Error('响应体过大，已中止读取');
-      }
-    }
-
-    if (result.eof) {
-      break;
-    }
-  }
-
-  const merged = new Uint8Array(total);
-  let offset = 0;
-  for (const chunk of chunks) {
-    merged.set(chunk, offset);
-    offset += chunk.byteLength;
-  }
-  return merged;
+/**
+ * 响应解析的结果。
+ *
+ * `complete` 为 false 表示头部已到齐但体还不完整 —— 调用方应继续读，
+ * 而不是把它当成一个残缺的响应去用。
+ */
+export interface ParseResult {
+  response: HttpResponse;
+  complete: boolean;
 }
 
 /**
  * 解析 HTTP/1.1 响应。
  *
- * 支持 Content-Length 与 chunked 两种响应体；两者都不存在时
- * 读取到结尾为止（Connection: close 语义下即为完整响应体）。
+ * 支持 Content-Length 与 chunked 两种响应体。两者都不存在时按
+ * Connection: close 语义处理：读到 EOF 才是完整响应体。
  */
-export function parseResponse(bytes: Uint8Array): TunnelHttpResponse {
+export function parseResponse(bytes: Uint8Array, ended = true): ParseResult {
   const separator = findHeaderEnd(bytes);
   if (separator === -1) {
     throw new Error('响应格式错误：未找到 HTTP 头部结束标记');
   }
 
-  const headerText = new TextDecoder('latin1').decode(bytes.subarray(0, separator));
+  const headerText = latin1Decoder.decode(bytes.subarray(0, separator));
   const lines = headerText.split('\r\n');
   const statusLine = lines[0] ?? '';
 
@@ -163,27 +111,41 @@ export function parseResponse(bytes: Uint8Array): TunnelHttpResponse {
     headers[name] = headers[name] === undefined ? value : `${headers[name]}, ${value}`;
   }
 
-  const bodyStart = separator + 4;
-  const rawBody = bytes.subarray(bodyStart);
+  const rawBody = bytes.subarray(separator + 4);
 
   const encoding = headers['transfer-encoding']?.toLowerCase() ?? '';
   if (encoding.includes('chunked')) {
-    return { status, statusText, headers, body: decodeChunked(rawBody) };
+    const decoded = decodeChunked(rawBody);
+    return {
+      response: { status, statusText, headers, body: decoded.body },
+      complete: decoded.complete,
+    };
   }
 
   const contentLength = headers['content-length'];
   if (contentLength !== undefined) {
     const length = Number(contentLength);
     if (Number.isFinite(length) && length >= 0) {
-      return { status, statusText, headers, body: rawBody.subarray(0, length) };
+      if (rawBody.byteLength < length) {
+        // 体还没收全，先返回已收到的部分并标记未完成。
+        return {
+          response: { status, statusText, headers, body: rawBody },
+          complete: false,
+        };
+      }
+      return {
+        response: { status, statusText, headers, body: rawBody.subarray(0, length) },
+        complete: true,
+      };
     }
   }
 
-  return { status, statusText, headers, body: rawBody };
+  // 无长度声明：只有在连接结束时才能确认响应完整。
+  return { response: { status, statusText, headers, body: rawBody }, complete: ended };
 }
 
 /** 找到 `\r\n\r\n` 的位置。 */
-function findHeaderEnd(bytes: Uint8Array): number {
+export function findHeaderEnd(bytes: Uint8Array): number {
   for (let index = 0; index + 3 < bytes.byteLength; index += 1) {
     if (
       bytes[index] === 0x0d &&
@@ -198,18 +160,23 @@ function findHeaderEnd(bytes: Uint8Array): number {
 }
 
 /** 解码 chunked 传输编码。 */
-function decodeChunked(bytes: Uint8Array): Uint8Array {
+function decodeChunked(bytes: Uint8Array): { body: Uint8Array; complete: boolean } {
   const chunks: Uint8Array[] = [];
   let offset = 0;
   let total = 0;
 
-  while (offset < bytes.byteLength) {
-    const lineEnd = indexOfCrlf(bytes, offset);
-    if (lineEnd === -1) {
-      break;
+  for (;;) {
+    if (offset >= bytes.byteLength) {
+      // 块长度行还没到齐。
+      return { body: merge(chunks, total), complete: false };
     }
 
-    const sizeLine = new TextDecoder('latin1').decode(bytes.subarray(offset, lineEnd));
+    const lineEnd = indexOfCrlf(bytes, offset);
+    if (lineEnd === -1) {
+      return { body: merge(chunks, total), complete: false };
+    }
+
+    const sizeLine = latin1Decoder.decode(bytes.subarray(offset, lineEnd));
     // 允许 chunk 扩展（如 "1a;ext=value"）。
     const sizeText = sizeLine.split(';')[0]?.trim() ?? '';
     const size = Number.parseInt(sizeText, 16);
@@ -217,20 +184,24 @@ function decodeChunked(bytes: Uint8Array): Uint8Array {
       throw new Error('分块响应格式错误：块长度无法解析');
     }
     if (size === 0) {
-      break;
+      // 结束块；尾部头（trailer）不解析，直接视为完成。
+      return { body: merge(chunks, total), complete: true };
     }
 
     const dataStart = lineEnd + 2;
     const dataEnd = dataStart + size;
     if (dataEnd > bytes.byteLength) {
-      throw new Error('分块响应格式错误：块数据不完整');
+      return { body: merge(chunks, total), complete: false };
     }
 
     chunks.push(bytes.subarray(dataStart, dataEnd));
     total += size;
+    // 跳过块数据后面的 CRLF。
     offset = dataEnd + 2;
   }
+}
 
+function merge(chunks: Uint8Array[], total: number): Uint8Array {
   const merged = new Uint8Array(total);
   let cursor = 0;
   for (const chunk of chunks) {
@@ -247,4 +218,25 @@ function indexOfCrlf(bytes: Uint8Array, from: number): number {
     }
   }
   return -1;
+}
+
+/** base64 → 字节。用于信令消息里的二进制体。 */
+export function base64ToBytes(value: string): Uint8Array {
+  const binary = atob(value);
+  const bytes = new Uint8Array(binary.length);
+  for (let index = 0; index < binary.length; index += 1) {
+    bytes[index] = binary.charCodeAt(index);
+  }
+  return bytes;
+}
+
+/** 字节 → base64。 */
+export function bytesToBase64(bytes: Uint8Array): string {
+  let binary = '';
+  // 分块拼接，避免超大数组触发参数数量上限。
+  const CHUNK = 0x8000;
+  for (let index = 0; index < bytes.length; index += CHUNK) {
+    binary += String.fromCharCode(...bytes.subarray(index, index + CHUNK));
+  }
+  return btoa(binary);
 }

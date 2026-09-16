@@ -190,3 +190,39 @@ button.primary:hover:not(:disabled) {
 .result.log {
   color: #9fb4d8;
 }
+
+/* 连接状态小卡片。 */
+.stats {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 12px;
+  margin-bottom: 14px;
+}
+
+.stat {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 10px 14px;
+  background: #0b0f18;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+}
+
+.stat-label {
+  color: var(--dim);
+  font-size: 12.5px;
+}
+
+.stat-value {
+  font-size: 14px;
+  font-weight: 550;
+}
+
+.stat-value.ok {
+  color: #23b26d;
+}
+
+.stat-value.dim {
+  color: var(--dim);
+}

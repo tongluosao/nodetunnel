@@ -1,171 +1,156 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue';
 
-import { PortalNode, type PortalNodeStatus } from '@/easytier/portal-node';
-import { requestOverTunnel } from '@/easytier/tunnel-http';
+import { resolveSlugFromLocation } from '@/slug.js';
+import { TunnelClient, type TunnelClientStatus } from '@/tunnel-client.js';
 
 /**
- * NodeTunnel 浏览器门户（需求 3）。
+ * NodeTunnel 浏览器门户。
  *
- * 流程：
- *   1. 用户在浏览器内启动一个 EasyTier 节点，加入目标隧道所在的虚拟网；
- *   2. 节点只发起连接、禁止一切入站，符合后端的 ACL 渲染；
- *   3. 之后便可在页面中直接访问隧道内被放行的服务。
+ * 用户在页面里填「路由 slug + 目标端口 + 路径」，门户就会：
+ *   1. 连上 Worker 的信令房间；
+ *   2. 尝试用 WebRTC 与主机端 P2P 直连（原生 ICE 打洞）；
+ *   3. 打不通就自动回落到中继 —— 这是设计内的常态路径。
  *
- * 访问路径有两条：
- *   - 经 Worker 中继：/t/<slug>/（无需本页节点，由 Worker 转发）；
- *   - 直连隧道内服务：本页节点加入虚拟网后直接连接目标 IP:端口。
+ * 页面上会把当前走的是哪条路显示出来，方便判断打洞是否成功。
+ * 无论走哪条路，端口白名单都由服务端与主机端各自校验，
+ * 前端无法绕过。
  */
 
-const node = new PortalNode();
-
-const status = ref<PortalNodeStatus>({ state: 'idle', connections: 0, events: [] });
-const starting = ref(false);
-const stopping = ref(false);
-
-const config = reactive({
-  networkName: '',
-  networkSecret: '',
-  relayUrl: '',
-  ipv4: '',
+const client = ref<TunnelClient | null>(null);
+const status = ref<TunnelClientStatus>({
+  signalingReady: false,
+  mode: null,
+  peerState: null,
+  message: '未连接',
 });
 
-const query = reactive({ host: '', port: 80, path: '/' });
-const querying = ref(false);
-const queryResult = ref('');
-const queryError = ref('');
+const form = reactive({
+  /** 路由 slug：对应管理后台里配置的 /t/<slug>/。 */
+  slug: '',
+  targetPort: 8080,
+  method: 'GET',
+  path: '/',
+});
 
-let unsubscribe: (() => void) | undefined;
+const sending = ref(false);
+const response = ref('');
+const error = ref('');
+const events = ref<string[]>([]);
 
-/** 由当前页面地址推导默认中继地址。 */
-function deriveRelayUrl(networkName: string): string {
-  const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-  const base = `${protocol}//${window.location.host}/relay`;
-  return networkName === '' ? base : `${base}?network=${encodeURIComponent(networkName)}`;
-}
-
-const stateLabel = computed(() => {
-  switch (status.value.state) {
-    case 'idle':
-      return '未启动';
-    case 'starting':
-      return '启动中';
-    case 'running':
-      return '运行中';
-    case 'stopped':
-      return '已停止';
-    case 'error':
-      return '出错';
+/** 当前传输方式的显示文案。 */
+const modeLabel = computed(() => {
+  switch (status.value.mode) {
+    case 'p2p':
+      return 'P2P 直连';
+    case 'relay':
+      return '中继';
     default:
-      return status.value.state;
+      return '未建立';
   }
 });
 
-const stateColor = computed(() => {
-  switch (status.value.state) {
-    case 'running':
+const modeColor = computed(() => {
+  switch (status.value.mode) {
+    case 'p2p':
       return '#23b26d';
-    case 'starting':
+    case 'relay':
       return '#e0a020';
-    case 'error':
-      return '#e04b4b';
     default:
       return '#8b96ad';
   }
 });
 
-/** 组网名变化时同步更新中继地址，减少手工输入。 */
-function syncRelayUrl(): void {
-  config.relayUrl = deriveRelayUrl(config.networkName.trim());
-}
-
-async function start(): Promise<void> {
-  if (config.networkName.trim() === '' || config.networkSecret.trim() === '') {
-    queryError.value = '请填写组网名与组网密钥';
-    return;
-  }
-  if (config.ipv4.trim() === '') {
-    queryError.value = '请填写本节点在虚拟网中的 IPv4 地址（需与网内其他节点同网段且不冲突）';
-    return;
-  }
-
-  starting.value = true;
-  queryError.value = '';
-  try {
-    if (config.relayUrl.trim() === '') {
-      syncRelayUrl();
-    }
-    await node.start({
-      networkName: config.networkName.trim(),
-      networkSecret: config.networkSecret.trim(),
-      relayUrl: config.relayUrl.trim(),
-      ipv4: config.ipv4.trim(),
-    });
-  } catch (error) {
-    queryError.value = error instanceof Error ? error.message : String(error);
-  } finally {
-    starting.value = false;
-  }
-}
-
-async function stop(): Promise<void> {
-  stopping.value = true;
-  try {
-    await node.stop();
-  } finally {
-    stopping.value = false;
-  }
-}
-
-async function sendRequest(): Promise<void> {
-  queryError.value = '';
-  queryResult.value = '';
-
-  if (!node.running) {
-    queryError.value = '浏览器节点尚未运行，请先启动节点';
-    return;
-  }
-  if (query.host.trim() === '') {
-    queryError.value = '请填写目标主机（虚拟网 IP）';
-    return;
-  }
-
-  querying.value = true;
-  try {
-    const stream = await node.connectTcp(query.host.trim(), query.port);
-    const response = await requestOverTunnel(stream, {
-      method: 'GET',
-      path: query.path.trim() === '' ? '/' : query.path.trim(),
-      hostHeader: `${query.host.trim()}:${query.port}`,
-      headers: { Accept: 'text/html,application/json,text/plain,*/*' },
-    });
-
-    const contentType = response.headers['content-type'] ?? '';
-    const text = new TextDecoder('utf-8').decode(response.body);
-    queryResult.value = `HTTP ${response.status} ${response.statusText}\nContent-Type: ${contentType || '（未声明）'}\n\n${text.slice(0, 4000)}`;
-  } catch (error) {
-    queryError.value = error instanceof Error ? error.message : String(error);
-  } finally {
-    querying.value = false;
-  }
-}
-
-async function refreshStatus(): Promise<void> {
-  await node.refresh();
+function recordEvent(message: string): void {
+  const stamp = new Date().toLocaleTimeString();
+  events.value = [...events.value.slice(-49), `[${stamp}] ${message}`];
 }
 
 onMounted(() => {
-  unsubscribe = node.subscribe((next) => {
-    status.value = next;
+  // 从 URL 自动识别 slug，减少手工输入。
+  const slug = resolveSlugFromLocation(window.location.pathname, window.location.search);
+  if (slug !== undefined) {
+    form.slug = slug;
+    recordEvent(`已从地址栏识别到路由 ${slug}`);
+  }
+
+  const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+  const signalingUrl = `${protocol}//${window.location.host}/signal`;
+
+  client.value = new TunnelClient({
+    signalingUrl,
+    slug: form.slug,
+    onStatus: (next) => {
+      status.value = next;
+      recordEvent(next.message);
+    },
   });
-  syncRelayUrl();
+  recordEvent(`信令地址：${signalingUrl}`);
 });
 
 onBeforeUnmount(() => {
-  unsubscribe?.();
-  // 离开页面时释放虚拟网连接，避免残留节点占用地址。
-  void node.stop();
+  client.value?.dispose();
 });
+
+async function send(): Promise<void> {
+  error.value = '';
+  response.value = '';
+
+  const slug = form.slug.trim().toLowerCase();
+  if (slug === '') {
+    error.value = '请填写路由 slug（管理后台中配置的路径前缀）';
+    return;
+  }
+
+  const instance = client.value;
+  if (instance === null) {
+    error.value = '客户端尚未初始化';
+    return;
+  }
+
+  sending.value = true;
+  try {
+    const result = await instance.request({
+      method: form.method.toUpperCase(),
+      path: form.path.trim() === '' ? '/' : form.path.trim(),
+      targetPort: Number(form.targetPort),
+    });
+
+    const headerLines = Object.entries(result.headers).map(([name, value]) => `${name}: ${value}`);
+    const bodyText = new TextDecoder('utf-8', { fatal: false }).decode(result.body);
+    response.value = [
+      `HTTP ${result.status} ${result.statusText}`,
+      ...headerLines,
+      '',
+      bodyText,
+    ].join('\n');
+
+    recordEvent(`请求完成：HTTP ${result.status}（${modeLabel.value}）`);
+  } catch (caught) {
+    error.value = caught instanceof Error ? caught.message : String(caught);
+    recordEvent(`请求失败：${error.value}`);
+  } finally {
+    sending.value = false;
+  }
+}
+
+function reset(): void {
+  client.value?.dispose();
+  client.value = null;
+  response.value = '';
+  error.value = '';
+
+  const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+  client.value = new TunnelClient({
+    signalingUrl: `${protocol}//${window.location.host}/signal`,
+    slug: form.slug.trim().toLowerCase(),
+    onStatus: (next) => {
+      status.value = next;
+      recordEvent(next.message);
+    },
+  });
+  recordEvent('已重置连接');
+}
 </script>
 
 <template>
@@ -173,106 +158,81 @@ onBeforeUnmount(() => {
     <header class="header">
       <h1>NodeTunnel 门户</h1>
       <p class="subtitle">
-        在浏览器内运行 EasyTier 节点，加入隧道所在的虚拟局域网并直连网内服务。
-        节点不监听任何端口，仅发起连接。
+        用 WebRTC 直连主机端；打洞失败时自动回落到中继。两条路都只放行白名单端口。
       </p>
     </header>
 
     <section class="card">
       <div class="card-head">
-        <h2>1. 浏览器节点</h2>
-        <span class="badge" :style="{ color: stateColor, borderColor: stateColor }">
-          {{ stateLabel }}
-        </span>
+        <h2>连接状态</h2>
+        <span class="badge" :style="{ color: modeColor }">{{ modeLabel }}</span>
       </div>
 
-      <div class="grid">
-        <label>
-          <span>组网名称</span>
-          <input
-            v-model="config.networkName"
-            placeholder="与隧道一致，如 home-net"
-            @blur="syncRelayUrl"
-          />
-        </label>
-
-        <label>
-          <span>组网密钥</span>
-          <input v-model="config.networkSecret" type="password" placeholder="与隧道一致" />
-        </label>
-
-        <label>
-          <span>本节点虚拟 IP</span>
-          <input v-model="config.ipv4" placeholder="如 10.144.144.10" />
-        </label>
-
-        <label class="wide">
-          <span>中继地址</span>
-          <input v-model="config.relayUrl" placeholder="wss://<域名>/relay?network=<组网名>" />
-        </label>
+      <div class="stats">
+        <div class="stat">
+          <span class="stat-label">信令</span>
+          <span :class="['stat-value', status.signalingReady ? 'ok' : 'dim']">
+            {{ status.signalingReady ? '已连接' : '未连接' }}
+          </span>
+        </div>
+        <div class="stat">
+          <span class="stat-label">传输方式</span>
+          <span class="stat-value" :style="{ color: modeColor }">{{ modeLabel }}</span>
+        </div>
+        <div class="stat">
+          <span class="stat-label">P2P 状态</span>
+          <span class="stat-value dim">{{ status.peerState ?? '—' }}</span>
+        </div>
       </div>
+
+      <p class="hint">
+        说明：本机网络若为对称 NAT，打洞通常无法成功，请求会经中继完成。这是预期行为。
+      </p>
 
       <div class="actions">
-        <button
-          class="primary"
-          :disabled="starting || status.state === 'running' || status.state === 'starting'"
-          @click="start"
-        >
-          {{ starting ? '启动中…' : '启动节点' }}
-        </button>
-        <button :disabled="stopping || status.state !== 'running'" @click="stop">
-          {{ stopping ? '停止中…' : '停止节点' }}
-        </button>
-        <button :disabled="status.state !== 'running'" @click="refreshStatus">刷新状态</button>
-        <span class="muted">当前连接数：{{ status.connections }}</span>
+        <button @click="reset">重置连接</button>
       </div>
-
-      <p v-if="status.error" class="error">{{ status.error }}</p>
     </section>
 
     <section class="card">
       <div class="card-head">
-        <h2>2. 访问隧道内服务</h2>
+        <h2>发起请求</h2>
       </div>
-      <p class="hint">
-        填写隧道节点的虚拟网 IP 与已放行的端口。请求经虚拟网直接发送， 不经过 Worker 转发。
-      </p>
 
       <div class="grid">
         <label>
-          <span>目标主机</span>
-          <input v-model="query.host" placeholder="如 10.144.144.1" />
+          <span>路由 slug</span>
+          <input v-model="form.slug" placeholder="my-app" />
         </label>
         <label>
-          <span>端口</span>
-          <input v-model.number="query.port" type="number" min="1" max="65535" />
+          <span>目标端口</span>
+          <input v-model.number="form.targetPort" type="number" min="1" max="65535" />
         </label>
-        <label class="wide">
+        <label>
+          <span>方法</span>
+          <input v-model="form.method" placeholder="GET" />
+        </label>
+        <label>
           <span>路径</span>
-          <input v-model="query.path" placeholder="/" />
+          <input v-model="form.path" placeholder="/" />
         </label>
       </div>
 
       <div class="actions">
-        <button class="primary" :disabled="querying || !node.running" @click="sendRequest">
-          {{ querying ? '请求中…' : '发送请求' }}
+        <button class="primary" :disabled="sending" @click="send">
+          {{ sending ? '请求中…' : '发送请求' }}
         </button>
       </div>
 
-      <p v-if="queryError" class="error">{{ queryError }}</p>
-      <pre v-if="queryResult" class="result">{{ queryResult }}</pre>
+      <p v-if="error" class="error">{{ error }}</p>
+      <pre v-if="response" class="result">{{ response }}</pre>
     </section>
 
-    <section v-if="status.events.length > 0" class="card">
+    <section v-if="events.length > 0" class="card">
       <div class="card-head">
         <h2>事件日志</h2>
       </div>
-      <pre class="result log">{{
-        status.events
-          .slice(-30)
-          .map((e) => `[${e.kind}] ${e.message}`)
-          .join('\n')
-      }}</pre>
+      <pre class="result log">{{ events.join('\n') }}</pre>
     </section>
   </div>
 </template>
