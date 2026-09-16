@@ -1,19 +1,23 @@
-import { CONFIG_SERVER_PATH, ROUTE_PREFIX } from '@nodetunnel/shared';
+import { ADMIN_API_PREFIX, ROUTE_PREFIX } from '@nodetunnel/shared';
 
 import type { Env } from './env.js';
 import { AppError } from './lib/errors.js';
 import { logger } from './lib/logger.js';
 import { handleAdminApi } from './admin/router.js';
-import { handleConfigServer } from './config-server/handler.js';
 import { handleTunnelRequest } from './http-tunnel/proxy.js';
-import { handleRelay, handleRelayHealth } from './relay/handler.js';
+import {
+  handleAgentConnect,
+  handleVisitorConnect,
+  isAgentPath,
+  isSignalingPath,
+} from './nodetunnel/signaling-gateway.js';
 import { handleHome } from './home.js';
 
 /**
  * Durable Object 类必须从入口文件导出，Wrangler 才会生成对应绑定。
  * 类名需与 wrangler.jsonc 中 durable_objects.bindings[].class_name 一致。
  */
-export { EasyTierRelayObject } from './relay/relay-object.js';
+export { SignalingRoom } from './signaling/room.js';
 
 /**
  * Worker 入口（接入层）。
@@ -23,7 +27,7 @@ export { EasyTierRelayObject } from './relay/relay-object.js';
  *   2. WebSocket 升级请求与普通 HTTP 请求的分流；
  *   3. 顶层异常兜底，把 AppError 转为结构化 JSON 响应。
  *
- * 具体业务逻辑一律下沉到 src/nodetunnel、src/admin、src/http-tunnel。
+ * 具体业务逻辑一律下沉到 src/nodetunnel、src/admin、src/http-tunnel、src/signaling。
  */
 export default {
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
@@ -31,32 +35,27 @@ export default {
     const path = url.pathname;
 
     try {
-      // 1. 中继健康检查（必须先于中继本身，避免被当作 WebSocket 升级处理）。
-      if (path === '/relay/health') {
-        return await handleRelayHealth(request, env);
+      // 1. 主机端 agent 的信令接入（需令牌）。
+      if (isAgentPath(path)) {
+        return await handleAgentConnect(request, env);
       }
 
-      // 2. EasyTier 中继：WebSocket 升级请求。
-      if (path === '/relay' || path.startsWith('/relay/')) {
-        return await handleRelay(request, env);
+      // 2. 浏览器访客的信令接入（按路由 slug）。
+      if (isSignalingPath(path)) {
+        return await handleVisitorConnect(request, env);
       }
 
-      // 3. 配置服务器：EasyTier 客户端通过 WebSocket 上报心跳。
-      if (path === CONFIG_SERVER_PATH) {
-        return await handleConfigServer(request, env);
-      }
-
-      // 4. 管理 API。
-      if (path.startsWith('/api/v1')) {
+      // 3. 管理 API。
+      if (path.startsWith(ADMIN_API_PREFIX)) {
         return await handleAdminApi(request, env, ctx);
       }
 
-      // 5. 隧道访问：/t/<slug>/...
+      // 4. 隧道访问：/t/<slug>/...，经中继转发到主机端服务。
       if (path === ROUTE_PREFIX || path.startsWith(`${ROUTE_PREFIX}/`)) {
         return await handleTunnelRequest(request, env);
       }
 
-      // 6. 首页与运行状态。
+      // 5. 首页与运行状态。
       return await handleHome(request, env);
     } catch (error) {
       return handleTopLevelError(error, path);

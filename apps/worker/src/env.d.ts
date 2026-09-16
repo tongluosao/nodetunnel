@@ -6,9 +6,9 @@
  */
 
 export interface Env {
-  /** EasyTier 中继 Durable Object 命名空间。 */
-  EASYTIER_RELAY: DurableObjectNamespace;
-  /** D1 数据库：管理员、tunnel、路由、节点。 */
+  /** 信令房间 Durable Object 命名空间。每个 tunnel 一个房间实例。 */
+  SIGNALING_ROOM: DurableObjectNamespace;
+  /** D1 数据库：管理员、tunnel、路由、主机端 agent。 */
   DB: D1Database;
 
   /** 部署版本号，来自 wrangler vars。 */
@@ -16,12 +16,6 @@ export interface Env {
 
   /** 会话令牌签名密钥。缺失即拒绝启动。 */
   ADMIN_SESSION_SECRET: string;
-  /** 组网密码加密密钥（base64，32 字节）。缺失即拒绝启动。 */
-  NT_MASTER_KEY: string;
-  /** 中继专用组网名称。 */
-  NT_RELAY_NETWORK_NAME: string;
-  /** 中继专用组网密钥。 */
-  NT_RELAY_NETWORK_SECRET: string;
   /** 管理后台来源，用于 CORS。 */
   NT_ADMIN_ORIGIN?: string;
 }

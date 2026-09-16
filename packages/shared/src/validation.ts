@@ -25,9 +25,6 @@ export const MAX_PORT = 65_535;
 /** slug：小写字母/数字/短横线，1–63 字符，不能以短横线开头或结尾。 */
 const SLUG_PATTERN = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/;
 
-/** 网络名：字母/数字/下划线/短横线/点，1–64 字符。 */
-const NETWORK_NAME_PATTERN = /^[A-Za-z0-9_.-]{1,64}$/;
-
 const USERNAME_PATTERN = /^[A-Za-z0-9_.-]{3,32}$/;
 
 export function validateSlug(input: unknown): Validated<string> {
@@ -37,17 +34,6 @@ export function validateSlug(input: unknown): Validated<string> {
   const value = input.trim().toLowerCase();
   if (!SLUG_PATTERN.test(value)) {
     return invalid('slug 只能包含小写字母、数字和短横线，长度 1–63，且不能以短横线开头或结尾');
-  }
-  return valid(value);
-}
-
-export function validateNetworkName(input: unknown): Validated<string> {
-  if (typeof input !== 'string') {
-    return invalid('网络名称必须是字符串');
-  }
-  const value = input.trim();
-  if (!NETWORK_NAME_PATTERN.test(value)) {
-    return invalid('网络名称只能包含字母、数字、下划线、短横线和点，长度 1–64');
   }
   return valid(value);
 }
@@ -83,18 +69,23 @@ export function validatePassword(input: unknown): Validated<string> {
   return valid(input);
 }
 
-/** 组网密钥：至少 16 位，允许任意可见字符。 */
-export function validateNetworkSecret(input: unknown): Validated<string> {
+/**
+ * 隧道接入令牌。
+ *
+ * 前缀 `nt_` 便于在日志与配置里一眼认出这是凭据；主体用 URL 安全字符集，
+ * 长度下限 32 位以保证熵足够（由服务端用 crypto 随机生成，不接受用户自拟）。
+ */
+const TOKEN_PATTERN = /^nt_[A-Za-z0-9_-]{32,128}$/;
+
+export function validateTunnelToken(input: unknown): Validated<string> {
   if (typeof input !== 'string') {
-    return invalid('组网密钥必须是字符串');
+    return invalid('接入令牌必须是字符串');
   }
-  if (input.length < 16) {
-    return invalid('组网密钥长度至少 16 位');
+  const value = input.trim();
+  if (!TOKEN_PATTERN.test(value)) {
+    return invalid('接入令牌格式不正确');
   }
-  if (input.length > 256) {
-    return invalid('组网密钥长度不能超过 256 位');
-  }
-  return valid(input);
+  return valid(value);
 }
 
 export function validatePort(input: unknown): Validated<number> {

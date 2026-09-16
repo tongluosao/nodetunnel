@@ -1,24 +1,41 @@
-import { MAX_TUNNEL_RESPONSE_BYTES, ROUTE_PREFIX, UPSTREAM_TIMEOUT_MS } from '@nodetunnel/shared';
+import {
+  MAX_TUNNEL_RESPONSE_BYTES,
+  RELAY_CHUNK_BYTES,
+  ROUTE_PREFIX,
+  isPortAllowed,
+  isTargetHostAllowed,
+  type TunnelPort,
+} from '@nodetunnel/shared';
 
 import type { Env } from '../env.js';
 import { AppError, ErrorCode } from '../lib/errors.js';
 import { logger } from '../lib/logger.js';
 import * as registry from '../nodetunnel/registry.js';
 import * as routesRegistry from '../nodetunnel/routes.js';
-import { resolveRelayUrl } from '../nodetunnel/endpoints.js';
+import { signalingRoomName } from '../signaling/object-name.js';
+import {
+  RELAY_SLUG_HEADER,
+  RELAY_TARGET_HOST_HEADER,
+  RELAY_TARGET_PORT_HEADER,
+} from '../signaling/headers.js';
 
 /**
- * HTTP 隧道转发（需求 3 的中继路径）。
+ * HTTP 隧道转发（中继回落路径）。
  *
  * 请求流程：
- *   浏览器 --GET /t/<slug>/path--> Worker --(EasyTier 虚拟网)--> 隧道节点上的 HTTP 服务
+ *   浏览器 --GET /t/<slug>/path--> Worker --(信令房间)-- 主机端 agent --(本地连接)--> 内网服务
  *
- * 实现方式：
- *   Worker 已通过中继与隧道节点处于同一 EasyTier 虚拟局域网。
- *   本模块把用户的 HTTP 请求转换为对目标虚拟 IP:端口 的请求，并把响应流式回传。
+ * 为什么经 Durable Object 而不是直连：
+ *   Worker 无法主动向主机端发起连接（主机端在内网、没有公网入口）。
+ *   主机端主动连上 Worker 的信令房间并保持长连接，Worker 把请求
+ *   顺着这条连接下发 —— 这就是「中继回落」的实现。
  *
- * 限制（浏览器权限所致，已在 AGENTS.md 说明）：
- *   仅支持 HTTP 明文服务；HTTPS 目标需要隧道侧自行终止 TLS。
+ * 与 P2P 的关系：
+ *   浏览器门户可以尝试用 WebRTC 直连主机端 agent；打洞成功时
+ *   请求不经过本模块。但实测本机网络为对称 NAT，打洞成功率低，
+ *   因此本模块是常态路径，不是异常兜底。
+ *
+ * 限制：仅支持 HTTP 明文服务；HTTPS 目标需由主机端侧自行终止 TLS。
  */
 
 export async function handleTunnelRequest(request: Request, env: Env): Promise<Response> {
@@ -60,108 +77,100 @@ export async function handleTunnelRequest(request: Request, env: Env): Promise<R
     throw new AppError(ErrorCode.TUNNEL_DISABLED);
   }
 
-  return forwardToTunnel(request, tunnel.networkName, route, rest, url.search);
+  // 安全边界在这里把关（业务层决策）。
+  // 主机端会再次独立校验一次 —— 不信任 Worker 的结论，两边都拦。
+  ensureTargetAllowed(tunnel.ports, route.targetHost, route.targetPort);
+
+  return forwardViaRoom(request, env, tunnel.id, route, rest, url.search);
 }
 
 /**
- * 把请求转发到隧道内的目标服务。
+ * 校验转发目标是否在白名单与允许的地址范围内。
  *
- * 目标地址为「虚拟 IP + 端口」。EasyTier 会把发往虚拟网段的流量
- * 通过中继或 P2P 通道送到隧道节点，因此在 Worker 侧表现为一次普通的
- * 内网 HTTP 请求。
- *
- * 注意：目标主机必须是虚拟网内的地址（如 10.144.144.x）。
- * 若管理员填写了公网地址，则该请求会绕过隧道直接访问，
- * 这不是预期行为 —— 因此在配置校验阶段已在文档中说明。
+ * 两条都必须过：端口未声明一律拒绝；地址必须是内网/回环，
+ * 否则这套系统会变成开放的匿名代理。
  */
-async function forwardToTunnel(
+function ensureTargetAllowed(ports: TunnelPort[], targetHost: string, targetPort: number): void {
+  if (!isPortAllowed(ports, targetPort, 'tcp')) {
+    throw new AppError(ErrorCode.FORBIDDEN, `端口 ${targetPort} 未在隧道端口白名单中放行`, {
+      port: targetPort,
+    });
+  }
+  if (!isTargetHostAllowed(targetHost)) {
+    throw new AppError(ErrorCode.FORBIDDEN, `目标地址 ${targetHost} 不在允许的内网范围内`, {
+      host: targetHost,
+    });
+  }
+}
+
+/**
+ * 把请求投递给信令房间，由它转交主机端。
+ *
+ * 目标地址通过请求头传给 DO —— DO 是基础层，不认识「路由」概念，
+ * 只按给定地址转发，业务决策留在这里。
+ */
+async function forwardViaRoom(
   request: Request,
-  networkName: string,
+  env: Env,
+  tunnelId: string,
   route: { slug: string; targetHost: string; targetPort: number },
   rest: string[],
   search: string,
 ): Promise<Response> {
-  const upstreamUrl = buildUpstreamUrl(route, rest, search);
+  const room = env.SIGNALING_ROOM.getByName(signalingRoomName(tunnelId));
 
-  // 复制请求头，去掉逐跳头与 Host。
+  const path = rest.length === 0 ? '/' : `/${rest.join('/')}`;
+  const upstream = new URL(request.url);
+  upstream.pathname = path;
+  upstream.search = search;
+
   const headers = new Headers(request.headers);
   headers.delete('host');
   headers.delete('connection');
   headers.delete('upgrade');
   headers.delete('keep-alive');
   headers.delete('transfer-encoding');
-  // 标记来源，便于隧道侧识别请求经由 nodetunnel 转发。
-  headers.set('X-Forwarded-Host', new URL(request.url).host);
-  headers.set('X-Nodentunnel-Route', route.slug);
+  headers.set(RELAY_TARGET_HOST_HEADER, route.targetHost);
+  headers.set(RELAY_TARGET_PORT_HEADER, String(route.targetPort));
+  headers.set(RELAY_SLUG_HEADER, route.slug);
 
   const init: RequestInit = {
     method: request.method,
     headers,
     redirect: 'manual',
   };
-  // GET/HEAD 不允许带 body。
   if (request.method !== 'GET' && request.method !== 'HEAD') {
     init.body = request.body;
     // @ts-expect-error Cloudflare Workers 要求流式请求显式声明 duplex。
     init.duplex = 'half';
   }
 
-  const timeoutSignal = AbortSignal.timeout(UPSTREAM_TIMEOUT_MS);
-
-  let upstream: Response;
+  let response: Response;
   try {
-    upstream = await fetch(upstreamUrl, { ...init, signal: timeoutSignal });
+    response = await room.fetch(new Request(upstream.toString(), init));
   } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    const isTimeout = message.toLowerCase().includes('timed out') || timeoutSignal.aborted;
-
     logger.warn('tunnel_forward_failed', {
       slug: route.slug,
-      network: networkName,
       target: `${route.targetHost}:${route.targetPort}`,
-      timeout: isTimeout,
-      error: message,
+      error: String(error),
     });
-
     throw new AppError(
-      isTimeout ? ErrorCode.UPSTREAM_TIMEOUT : ErrorCode.UPSTREAM_ERROR,
-      isTimeout
-        ? `访问目标服务超时（${route.targetHost}:${route.targetPort}）。请确认隧道节点在线且服务已启动。`
-        : `无法连接目标服务 ${route.targetHost}:${route.targetPort}。请确认隧道节点已接入且端口已在白名单中放行。`,
+      ErrorCode.AGENT_OFFLINE,
+      `无法访问目标服务 ${route.targetHost}:${route.targetPort}。请确认主机端已接入。`,
       { slug: route.slug },
     );
   }
 
-  return buildDownstreamResponse(upstream, route.slug);
-}
-
-function buildUpstreamUrl(
-  route: { targetHost: string; targetPort: number },
-  rest: string[],
-  search: string,
-): string {
-  const path = rest.length === 0 ? '/' : `/${rest.join('/')}`;
-  // 目标服务始终使用 HTTP（浏览器端无法在隧道内终止 TLS）。
-  const url = new URL(`http://${route.targetHost}:${route.targetPort}${path}`);
-  url.search = search;
-  return url.toString();
+  return buildDownstreamResponse(response, route.slug);
 }
 
 /**
  * 构造回传给浏览器的响应。
  *
- * 逐跳头必须剥离；同时加入安全响应头，避免隧道内容
- * 在 nodetunnel 域名下获得过高的权限。
+ * 房间已经剥离过逐跳头，这里只做体量检查并补一个来源标记。
  */
 function buildDownstreamResponse(upstream: Response, slug: string): Response {
   const headers = new Headers(upstream.headers);
-  headers.delete('connection');
-  headers.delete('keep-alive');
-  headers.delete('transfer-encoding');
-  headers.delete('upgrade');
-  // 隧道内容可能来自不受信任的内网服务，禁止其提升为同源特权。
-  headers.set('X-Content-Type-Options', 'nosniff');
-  headers.set('Referrer-Policy', 'no-referrer');
   headers.set('X-Nodentunnel-Route', slug);
 
   const contentLength = headers.get('content-length');
@@ -184,8 +193,5 @@ export function routePrefixFor(slug: string): string {
   return `${ROUTE_PREFIX}/${slug}`;
 }
 
-/** 中继地址推导（转发层需要与配置下发保持一致的地址）。 */
-export function relayUrlFor(env: Env, origin: string, networkName: string): string {
-  void env;
-  return resolveRelayUrl(origin, networkName);
-}
+/** 中继分片大小，与门户侧共用同一常量，避免两边取值漂移。 */
+export const relayChunkBytes = RELAY_CHUNK_BYTES;

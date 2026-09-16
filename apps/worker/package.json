@@ -1,9 +1,9 @@
 {
   "name": "@nodetunnel/worker",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "type": "module",
-  "description": "NodeTunnel 中心服务：EasyTier 中继、配置服务器、路由转发与管理 API",
+  "description": "NodeTunnel 中心服务：信令房间、中继转发与管理 API",
   "scripts": {
     "dev": "wrangler dev --local --port 8787",
     "deploy": "wrangler deploy",
@@ -15,9 +15,6 @@
     "db:migrate:local": "wrangler d1 migrations apply nodetunnel --local"
   },
   "dependencies": {
-    "@easytier/cloudflare": "workspace:*",
-    "@easytier/runtime": "workspace:*",
-    "@nodetunnel/protocol": "workspace:*",
     "@nodetunnel/shared": "workspace:*"
   },
   "devDependencies": {

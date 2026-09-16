@@ -1,41 +1,9 @@
 /**
  * 前后端共用的领域类型。
  *
- * 这些类型是 Worker 管理 API、管理后台与 portal 之间的唯一契约来源。
- * 修改时必须同时检查三端的用法。
+ * 这些类型是 Worker 管理 API、管理后台、agent 与 portal 之间的唯一契约来源。
+ * 修改时必须同时检查四端的用法。
  */
-
-/** ACL 协议枚举，取值与 easytier-proto/proto/acl.proto 的 Protocol 一致。 */
-export const AclProtocol = {
-  Unspecified: 0,
-  TCP: 1,
-  UDP: 2,
-  ICMP: 3,
-  ICMPv6: 4,
-  Any: 5,
-} as const;
-
-/** ACL 动作枚举，取值与 acl.proto 的 Action 一致。 */
-export const AclAction = {
-  Noop: 0,
-  Allow: 1,
-  Drop: 2,
-} as const;
-
-/** ACL 链类型枚举，取值与 acl.proto 的 ChainType 一致。 */
-export const AclChainType = {
-  Unspecified: 0,
-  /** 发往本节点 */
-  Inbound: 1,
-  /** 由本节点发出 */
-  Outbound: 2,
-  /** 子网代理转发 */
-  Forward: 3,
-} as const;
-
-export type AclProtocolValue = (typeof AclProtocol)[keyof typeof AclProtocol];
-export type AclActionValue = (typeof AclAction)[keyof typeof AclAction];
-export type AclChainTypeValue = (typeof AclChainType)[keyof typeof AclChainType];
 
 /** 暴露端口的传输层协议。 */
 export type PortProtocol = 'tcp' | 'udp';
@@ -45,15 +13,21 @@ export interface TunnelPort {
   protocol: PortProtocol;
 }
 
-/** tunnel：一个 EasyTier 组网 + 其暴露策略。 */
+/**
+ * tunnel：一台主机端 agent 的接入登记与其暴露策略。
+ *
+ * 与重构前的区别：不再有 EasyTier 组网名与中继地址。主机端凭接入令牌
+ * 连上 Worker 的信令房间，路由转发与 P2P 都以此为身份锚点。
+ */
 export interface Tunnel {
   id: string;
   /** 展示名，唯一。 */
   name: string;
-  /** EasyTier 网络名，唯一。 */
-  networkName: string;
-  /** 中继地址（wss://...）。 */
-  relayUrl: string;
+  /**
+   * 接入令牌的前 8 位，仅用于管理后台辨认「这是哪一把令牌」。
+   * 完整令牌只在创建/轮换时返回一次，服务端只存哈希。
+   */
+  tokenPrefix: string;
   enabled: boolean;
   /** 允许入站的端口白名单；其余端口一律拒绝。 */
   ports: TunnelPort[];
@@ -61,7 +35,16 @@ export interface Tunnel {
   updatedAt: number;
 }
 
-/** 路由：把 `/<slug>` 前缀映射到某个 tunnel 内的目标服务。 */
+/**
+ * 创建或轮换令牌后的一次性返回。
+ *
+ * `token` 是明文，此后服务端无法再取回 —— 丢失只能重新轮换。
+ */
+export interface TunnelWithToken extends Tunnel {
+  token: string;
+}
+
+/** 路由：把 `/t/<slug>` 前缀映射到某台主机上的目标服务。 */
 export interface Route {
   id: string;
   /** URL 前缀片段，唯一，形如 `my-app`，对应 `/t/my-app/...`。 */
@@ -74,16 +57,16 @@ export interface Route {
   updatedAt: number;
 }
 
-/** 已接入的 EasyTier 节点。 */
-export interface NodeRecord {
+/** 已接入的主机端 agent。由信令房间在连接建立/断开时写入。 */
+export interface AgentRecord {
   id: string;
-  instanceId: string;
+  tunnelId: string;
   hostname: string | null;
-  machineId: string | null;
-  tunnelId: string | null;
-  ipv4: string | null;
-  easytierVersion: string | null;
+  version: string | null;
+  /** 最近一次心跳时间（Unix 毫秒）。 */
   lastSeen: number;
+  /** 最近一次上报的本地可达端口（用于管理后台核对白名单是否生效）。 */
+  reportedPorts: number[];
   createdAt: number;
 }
 
@@ -106,9 +89,10 @@ export interface SystemStatus {
 export interface DashboardStats {
   tunnelCount: number;
   routeCount: number;
-  nodeCount: number;
-  onlineNodeCount: number;
-  relayConnections: number;
+  agentCount: number;
+  onlineAgentCount: number;
+  /** 当前信令房间内的活跃连接数（访客 + 主机）。 */
+  activeConnections: number;
 }
 
 /** 统一错误响应体。 */

@@ -1,7 +1,8 @@
 import { ROUTE_PREFIX } from '@nodetunnel/shared';
 
 import type { Env } from './env.js';
-import { resolveConfigServerUrl, resolveRelayUrl } from './nodetunnel/endpoints.js';
+import { countOnlineAgents } from './nodetunnel/agent-registry.js';
+import { resolveAgentUrl, resolveSignalingUrl } from './nodetunnel/endpoints.js';
 
 /**
  * 首页与运行状态页。
@@ -14,12 +15,17 @@ export async function handleHome(request: Request, env: Env): Promise<Response> 
   const origin = `${url.protocol}//${url.host}`;
 
   if (url.pathname === '/health') {
-    const relayHealth = await probeRelay(env);
+    const online = await countOnlineAgents(env, Date.now() - 120_000).catch(() => 0);
     return Response.json({
       ok: true,
       service: 'nodetunnel',
       version: env.NODETUNNEL_VERSION,
-      relay: relayHealth,
+      // 保持与旧版 /health 的字段形状兼容，便于既有监控脚本继续工作。
+      relay: {
+        ok: true,
+        state: 'running',
+        onlineAgents: online,
+      },
     });
   }
 
@@ -32,11 +38,11 @@ export async function handleHome(request: Request, env: Env): Promise<Response> 
     '',
     `版本: ${env.NODETUNNEL_VERSION}`,
     '',
-    '可用于普通 EasyTier 客户端的配置服务器地址：',
-    `  ${resolveConfigServerUrl(origin)}`,
+    '主机端接入地址（用接入令牌认证）：',
+    `  ${resolveAgentUrl(origin)}`,
     '',
-    '中继地址（配合组网名使用）：',
-    `  ${resolveRelayUrl(origin, '<组网名>')}`,
+    '浏览器门户信令地址：',
+    `  ${resolveSignalingUrl(origin)}`,
     '',
     '隧道访问前缀：',
     `  ${ROUTE_PREFIX}/<slug>/`,
@@ -47,20 +53,4 @@ export async function handleHome(request: Request, env: Env): Promise<Response> 
   return new Response(lines.join('\n'), {
     headers: { 'Content-Type': 'text/plain; charset=utf-8' },
   });
-}
-
-/** 探测中继健康状态；失败不影响首页与根健康检查的可用性。 */
-async function probeRelay(env: Env): Promise<{ ok: boolean; state: string; connections: number }> {
-  try {
-    const healthRequest = new Request('https://internal/health', { method: 'GET' });
-    const response = await env.EASYTIER_RELAY.getByName('primary').fetch(healthRequest);
-    const body = (await response.json().catch(() => ({}))) as Record<string, unknown>;
-    return {
-      ok: response.ok,
-      state: typeof body.state === 'string' ? body.state : 'unknown',
-      connections: typeof body.connections === 'number' ? body.connections : 0,
-    };
-  } catch {
-    return { ok: false, state: 'stopped', connections: 0 };
-  }
 }

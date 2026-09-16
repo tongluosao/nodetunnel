@@ -175,6 +175,46 @@ export function randomId(prefix = ''): string {
   return `${prefix}${crypto.randomUUID()}`;
 }
 
+/* ------------------------------ 接入令牌 ------------------------------ */
+
+/**
+ * 生成隧道接入令牌。
+ *
+ * 32 字节随机数据，base64url 编码后加 `nt_` 前缀。
+ * 前缀的作用是让人在日志与配置文件里一眼认出这是凭据，
+ * 避免它被当成普通标识符随手贴出去。
+ */
+export function generateTunnelToken(): string {
+  const bytes = crypto.getRandomValues(new Uint8Array(32));
+  let binary = '';
+  for (const byte of bytes) {
+    binary += String.fromCharCode(byte);
+  }
+  const base64url = btoa(binary).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+  return `nt_${base64url}`;
+}
+
+/**
+ * 计算令牌的存储摘要。
+ *
+ * 用一次 SHA-256 而非 PBKDF2：令牌是服务端生成的 32 字节随机值，
+ * 不存在「弱口令被穷举」的风险，慢哈希只会拖慢每次握手。
+ */
+export async function hashToken(token: string): Promise<string> {
+  const digest = await crypto.subtle.digest(
+    'SHA-256',
+    textEncoder.encode(token) as unknown as BufferSource,
+  );
+  return Array.from(new Uint8Array(digest))
+    .map((byte) => byte.toString(16).padStart(2, '0'))
+    .join('');
+}
+
+/** 令牌前 8 位，仅供管理后台辨认。 */
+export function tokenPrefix(token: string): string {
+  return token.slice(0, 8);
+}
+
 async function importHmacKey(secret: string): Promise<CryptoKey> {
   return crypto.subtle.importKey(
     'raw',

@@ -3,35 +3,29 @@
   "name": "nodetunnel",
   "main": "src/index.ts",
   "compatibility_date": "2026-07-29",
-  // 与上游 easytier-js/cloudflare 的 wrangler.jsonc 保持一致：只需 nodejs_compat。
+  // nodejs_compat 提供 WebSocketPair、crypto 等 Node/Worker 混合能力。
   //
-  // 曾尝试加入 JSPI 相关标志，但 workerd 并不存在名为 jspi /
-  // experimental_wasm_jspi 的 compatibility flag（两者都会导致
-  // 「No such compatibility flag」而无法启动）。上游 Cloudflare 适配层
-  // 不使用 JSPI 调度，浏览器 profile 才需要 WebAssembly.Suspending。
+  // 不要添加 JSPI 相关标志：workerd 并不存在名为 jspi /
+  // experimental_wasm_jspi 的 compatibility flag，加上会导致
+  // 「No such compatibility flag」而完全无法启动。
   "compatibility_flags": ["nodejs_compat"],
-  "rules": [
-    {
-      "type": "CompiledWasm",
-      "globs": ["**/*.wasm"],
-      "fallthrough": true,
-    },
-  ],
   "vars": {
-    "NODETUNNEL_VERSION": "0.1.0",
+    "NODETUNNEL_VERSION": "0.2.0",
   },
   "durable_objects": {
     "bindings": [
       {
-        "name": "EASYTIER_RELAY",
-        "class_name": "EasyTierRelayObject",
+        "name": "SIGNALING_ROOM",
+        "class_name": "SignalingRoom",
       },
     ],
   },
   "migrations": [
     {
+      // v1 是重构前的 EasyTier 中继类，已删除；这里换用新的类名与 tag。
+      // 由于项目尚未部署（D1 id 仍是占位符），不保留旧类的废弃迁移。
       "tag": "v1",
-      "new_sqlite_classes": ["EasyTierRelayObject"],
+      "new_sqlite_classes": ["SignalingRoom"],
     },
   ],
   "d1_databases": [

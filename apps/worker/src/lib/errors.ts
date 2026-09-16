@@ -32,8 +32,8 @@ export const ErrorCode = {
   MISSING_SECRET: 'missing_secret',
   CONFIG_ENCRYPTION_FAILED: 'config_encryption_failed',
 
-  // 隧道与中继
-  RELAY_UNAVAILABLE: 'relay_unavailable',
+  // 隧道与信令
+  AGENT_OFFLINE: 'agent_offline',
   TUNNEL_DISABLED: 'tunnel_disabled',
   UPSTREAM_TIMEOUT: 'upstream_timeout',
   UPSTREAM_ERROR: 'upstream_error',
@@ -56,7 +56,7 @@ const ERROR_STATUS: Record<ErrorCodeValue, number> = {
   [ErrorCode.CONFLICT]: 409,
   [ErrorCode.MISSING_SECRET]: 500,
   [ErrorCode.CONFIG_ENCRYPTION_FAILED]: 500,
-  [ErrorCode.RELAY_UNAVAILABLE]: 503,
+  [ErrorCode.AGENT_OFFLINE]: 503,
   [ErrorCode.TUNNEL_DISABLED]: 503,
   [ErrorCode.UPSTREAM_TIMEOUT]: 504,
   [ErrorCode.UPSTREAM_ERROR]: 502,
@@ -75,7 +75,7 @@ const ERROR_MESSAGE: Record<ErrorCodeValue, string> = {
   [ErrorCode.CONFLICT]: '资源冲突',
   [ErrorCode.MISSING_SECRET]: '服务端缺少必需的密钥配置',
   [ErrorCode.CONFIG_ENCRYPTION_FAILED]: '配置加解密失败',
-  [ErrorCode.RELAY_UNAVAILABLE]: 'EasyTier 中继当前不可用',
+  [ErrorCode.AGENT_OFFLINE]: '主机端尚未接入或已离线',
   [ErrorCode.TUNNEL_DISABLED]: '该隧道已被禁用',
   [ErrorCode.UPSTREAM_TIMEOUT]: '访问目标服务超时',
   [ErrorCode.UPSTREAM_ERROR]: '目标服务返回错误',

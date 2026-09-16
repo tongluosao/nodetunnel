@@ -10,8 +10,13 @@
 -- 约定：
 --   - 时间戳统一为 Unix 毫秒（INTEGER）；
 --   - 布尔值用 INTEGER 0/1；
---   - 密码只存 PBKDF2 哈希与盐，绝不存明文或可逆密文；
---   - network_secret 必须能回传给客户端，故用 AES-GCM 加密后存 network_secret_enc。
+--   - 管理员密码只存 PBKDF2 哈希与盐，绝不存明文或可逆密文；
+--   - 接入令牌只存 SHA-256 哈希，明文仅在生成时返回一次。
+--
+-- 关于令牌为何用 SHA-256 而不是 PBKDF2：
+--   PBKDF2 慢是为了对抗「低熵的人类密码」被暴力穷举。接入令牌由服务端
+--   用 crypto 随机生成 32 字节，熵已足够，穷举不可行；此时再用慢哈希
+--   只会让每次信令握手都付出无谓的代价。故用一次 SHA-256。
 
 -- 管理员。首启时表为空，触发管理后台的初始化流程。
 CREATE TABLE IF NOT EXISTS admins (
@@ -24,20 +29,20 @@ CREATE TABLE IF NOT EXISTS admins (
   updated_at    INTEGER NOT NULL
 );
 
--- tunnel：一个 EasyTier 组网及其暴露策略。
+-- tunnel：一台主机端 agent 的接入登记及其暴露策略。
 CREATE TABLE IF NOT EXISTS tunnels (
-  id                 TEXT PRIMARY KEY,
-  name               TEXT NOT NULL UNIQUE,
-  network_name       TEXT NOT NULL UNIQUE,
-  -- AES-GCM 密文，格式 v1:<iv>:<ciphertext>
-  network_secret_enc TEXT NOT NULL,
-  relay_url          TEXT NOT NULL,
-  enabled            INTEGER NOT NULL DEFAULT 1,
-  created_at         INTEGER NOT NULL,
-  updated_at         INTEGER NOT NULL
+  id            TEXT PRIMARY KEY,
+  name          TEXT NOT NULL UNIQUE,
+  -- 接入令牌的 SHA-256 十六进制摘要。明文不落库。
+  token_hash    TEXT NOT NULL UNIQUE,
+  -- 令牌前 8 位，仅供管理后台辨认，不构成凭据。
+  token_prefix  TEXT NOT NULL,
+  enabled       INTEGER NOT NULL DEFAULT 1,
+  created_at    INTEGER NOT NULL,
+  updated_at    INTEGER NOT NULL
 );
 
--- 暴露端口白名单。渲染为 ACL 的 Allow 规则；未列出的端口一律拒绝。
+-- 暴露端口白名单。agent 只会为这些端口建立本地转发；未列出的端口一律拒绝。
 CREATE TABLE IF NOT EXISTS tunnel_ports (
   id        TEXT PRIMARY KEY,
   tunnel_id TEXT NOT NULL REFERENCES tunnels(id) ON DELETE CASCADE,
@@ -47,7 +52,7 @@ CREATE TABLE IF NOT EXISTS tunnel_ports (
   UNIQUE (tunnel_id, port, protocol)
 );
 
--- 路由：/t/<slug> -> tunnel 内的目标服务。
+-- 路由：/t/<slug> -> 某台主机上的目标服务。
 CREATE TABLE IF NOT EXISTS routes (
   id          TEXT PRIMARY KEY,
   slug        TEXT NOT NULL UNIQUE,
@@ -59,21 +64,20 @@ CREATE TABLE IF NOT EXISTS routes (
   updated_at  INTEGER NOT NULL
 );
 
--- 已接入的 EasyTier 节点，由配置服务器心跳 UPSERT。
-CREATE TABLE IF NOT EXISTS nodes (
-  id               TEXT PRIMARY KEY,
-  instance_id      TEXT NOT NULL UNIQUE,
-  machine_id       TEXT,
-  hostname         TEXT,
-  tunnel_id        TEXT REFERENCES tunnels(id) ON DELETE SET NULL,
-  ipv4             TEXT,
-  easytier_version TEXT,
-  last_seen        INTEGER NOT NULL,
-  created_at       INTEGER NOT NULL
+-- 已接入的主机端 agent。由信令房间在连接建立与心跳时 UPSERT。
+CREATE TABLE IF NOT EXISTS agents (
+  id             TEXT PRIMARY KEY,
+  tunnel_id      TEXT NOT NULL UNIQUE REFERENCES tunnels(id) ON DELETE CASCADE,
+  hostname       TEXT,
+  version        TEXT,
+  -- 最近一次上报的本地可达端口，JSON 数组文本。用于后台核对白名单。
+  reported_ports TEXT NOT NULL DEFAULT '[]',
+  last_seen      INTEGER NOT NULL,
+  created_at     INTEGER NOT NULL
 );
 
 CREATE INDEX IF NOT EXISTS idx_routes_slug ON routes (slug);
 CREATE INDEX IF NOT EXISTS idx_routes_tunnel ON routes (tunnel_id);
 CREATE INDEX IF NOT EXISTS idx_tunnel_ports_tunnel ON tunnel_ports (tunnel_id);
-CREATE INDEX IF NOT EXISTS idx_nodes_instance ON nodes (instance_id);
-CREATE INDEX IF NOT EXISTS idx_nodes_last_seen ON nodes (last_seen);
+CREATE INDEX IF NOT EXISTS idx_tunnels_token ON tunnels (token_hash);
+CREATE INDEX IF NOT EXISTS idx_agents_last_seen ON agents (last_seen);

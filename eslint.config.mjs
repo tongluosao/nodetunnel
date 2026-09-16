@@ -12,8 +12,7 @@ import vueParser from 'vue-eslint-parser';
  */
 const BASE_LAYER_DIRS = [
   'apps/worker/src/db/**',
-  'apps/worker/src/relay/**',
-  'apps/worker/src/config-server/**',
+  'apps/worker/src/signaling/**',
   'apps/worker/src/lib/**',
   'packages/**',
 ];
@@ -29,11 +28,7 @@ export default tseslint.config(
       '**/.wrangler/**',
       '**/.turbo/**',
       '**/coverage/**',
-      '**/.wasm-build/**',
       '其他项目代码/**',
-      '**/wasm/**',
-      '**/src/generated/**',
-      'packages/easytier-js/runtime/src/jspi.d.ts',
     ],
   },
   js.configs.recommended,
@@ -76,28 +71,6 @@ export default tseslint.config(
       eqeqeq: ['error', 'always'],
       'no-console': 'off',
       'prefer-const': 'error',
-    },
-  },
-  {
-    /**
-     * vendored 上游代码（packages/easytier-js）。
-     *
-     * 这批文件通过 scripts/sync-upstream.mjs 从只读参考目录同步而来，
-     * 本项目遵循「最小改动复用上游」的原则，因此不把本仓库的代码风格
-     * 强制施加到它们身上——否则每次同步都会产生无意义的冲突。
-     * 仅保留真正影响正确性的规则（如 no-undef 之外的错误用法）。
-     */
-    files: ['packages/easytier-js/**/*.ts'],
-    rules: {
-      '@typescript-eslint/consistent-type-imports': 'off',
-      '@typescript-eslint/no-explicit-any': 'off',
-      '@typescript-eslint/no-unused-vars': 'off',
-      '@typescript-eslint/no-empty-object-type': 'off',
-      '@typescript-eslint/no-empty-interface': 'off',
-      'prefer-const': 'off',
-      'no-undef': 'off',
-      'no-empty': 'off',
-      'no-useless-escape': 'off',
     },
   },
   {
@@ -169,6 +142,40 @@ export default tseslint.config(
     },
   },
   {
+    /**
+     * 主机端 agent 运行在 Node 上，使用 Node 全局对象。
+     *
+     * 它是唯一一个「既有类型又要 Node 全局」的工作区：
+     * 其他 Node 代码都是 .mjs 脚本（不做类型化约束），
+     * 而 agent 是 TypeScript。
+     */
+    files: ['apps/agent/**/*.ts'],
+    languageOptions: {
+      globals: {
+        process: 'readonly',
+        console: 'readonly',
+        Buffer: 'readonly',
+        fetch: 'readonly',
+        Headers: 'readonly',
+        Request: 'readonly',
+        Response: 'readonly',
+        AbortController: 'readonly',
+        AbortSignal: 'readonly',
+        TextEncoder: 'readonly',
+        TextDecoder: 'readonly',
+        URL: 'readonly',
+        URLSearchParams: 'readonly',
+        crypto: 'readonly',
+        WebSocket: 'readonly',
+        setTimeout: 'readonly',
+        clearTimeout: 'readonly',
+        setInterval: 'readonly',
+        clearInterval: 'readonly',
+        structuredClone: 'readonly',
+      },
+    },
+  },
+  {
     // Node 脚本使用 Node 全局对象，且不做类型化约束。
     // 覆盖仓库根 scripts/ 以及各应用、包内的 scripts/ 目录。
     files: [
@@ -187,11 +194,24 @@ export default tseslint.config(
         __dirname: 'readonly',
         __filename: 'readonly',
         URL: 'readonly',
+        URLSearchParams: 'readonly',
         WebAssembly: 'readonly',
         setTimeout: 'readonly',
         clearTimeout: 'readonly',
         setInterval: 'readonly',
         clearInterval: 'readonly',
+        // Node 18+ 已内置 fetch 与相关 Web 标准类型，脚本里可直接使用。
+        fetch: 'readonly',
+        Headers: 'readonly',
+        Request: 'readonly',
+        Response: 'readonly',
+        FormData: 'readonly',
+        AbortController: 'readonly',
+        AbortSignal: 'readonly',
+        TextEncoder: 'readonly',
+        TextDecoder: 'readonly',
+        crypto: 'readonly',
+        structuredClone: 'readonly',
       },
     },
   },
@@ -225,8 +245,7 @@ export default tseslint.config(
             {
               group: ['cloudflare:workers'],
               importNames: ['DurableObject'],
-              message:
-                '业务层不得直接实例化 DurableObject，请通过 src/db 或 src/relay 暴露的接口访问。',
+              message: '业务层不得直接实例化 DurableObject，请通过 src/signaling 暴露的接口访问。',
             },
           ],
         },

@@ -1,4 +1,4 @@
-import type { AdminAccount, NodeRecord, Route, Tunnel, TunnelPort } from '@nodetunnel/shared';
+import type { AgentRecord, AdminAccount, Route, Tunnel, TunnelPort } from '@nodetunnel/shared';
 
 /**
  * D1 数据访问层（基础层）。
@@ -23,9 +23,8 @@ interface AdminRow {
 interface TunnelRow {
   id: string;
   name: string;
-  network_name: string;
-  network_secret_enc: string;
-  relay_url: string;
+  token_hash: string;
+  token_prefix: string;
   enabled: number;
   created_at: number;
   updated_at: number;
@@ -50,14 +49,12 @@ interface RouteRow {
   updated_at: number;
 }
 
-interface NodeRow {
+interface AgentRow {
   id: string;
-  instance_id: string;
-  machine_id: string | null;
+  tunnel_id: string;
   hostname: string | null;
-  tunnel_id: string | null;
-  ipv4: string | null;
-  easytier_version: string | null;
+  version: string | null;
+  reported_ports: string;
   last_seen: number;
   created_at: number;
 }
@@ -84,15 +81,32 @@ function toRoute(row: RouteRow): Route {
   };
 }
 
-function toNode(row: NodeRow): NodeRecord {
+/**
+ * 解析本地可达端口。
+ *
+ * 该字段是 agent 上报的 JSON 文本，可能因版本差异或人工改动而损坏，
+ * 因此解析失败时回退为空数组而不是抛错 —— 上报信息不可信且非关键路径，
+ * 不该让一次坏数据把整个管理后台的节点列表打挂。
+ */
+function parseReportedPorts(raw: string): number[] {
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    if (!Array.isArray(parsed)) {
+      return [];
+    }
+    return parsed.filter((item): item is number => typeof item === 'number');
+  } catch {
+    return [];
+  }
+}
+
+function toAgent(row: AgentRow): AgentRecord {
   return {
     id: row.id,
-    instanceId: row.instance_id,
-    machineId: row.machine_id,
-    hostname: row.hostname,
     tunnelId: row.tunnel_id,
-    ipv4: row.ipv4,
-    easytierVersion: row.easytier_version,
+    hostname: row.hostname,
+    version: row.version,
+    reportedPorts: parseReportedPorts(row.reported_ports),
     lastSeen: row.last_seen,
     createdAt: row.created_at,
   };
@@ -102,8 +116,7 @@ function toTunnel(row: TunnelRow, ports: TunnelPort[]): Tunnel {
   return {
     id: row.id,
     name: row.name,
-    networkName: row.network_name,
-    relayUrl: row.relay_url,
+    tokenPrefix: row.token_prefix,
     enabled: row.enabled === 1,
     ports,
     createdAt: row.created_at,
@@ -260,28 +273,27 @@ export async function findTunnelByName(db: D1Database, name: string): Promise<Tu
   return toTunnel(row, (ports.results ?? []).map(toPort));
 }
 
-/** 取出加密的组网密钥。只有渲染客户端配置时才需要调用。 */
-export async function findTunnelSecret(db: D1Database, id: string): Promise<string | undefined> {
-  const row = await db
-    .prepare('SELECT network_secret_enc FROM tunnels WHERE id = ?')
-    .bind(id)
-    .first<{ network_secret_enc: string }>();
-  return row?.network_secret_enc;
-}
-
-export async function findTunnelByNetworkName(
+/**
+ * 按令牌哈希查找隧道。信令握手时使用。
+ *
+ * 返回 undefined 表示令牌无效 —— 调用方不得区分「不存在」与「已禁用」，
+ * 避免通过响应差异枚举令牌。
+ */
+export async function findTunnelByTokenHash(
   db: D1Database,
-  networkName: string,
+  tokenHash: string,
 ): Promise<Tunnel | undefined> {
   const row = await db
-    .prepare('SELECT * FROM tunnels WHERE network_name = ?')
-    .bind(networkName)
+    .prepare('SELECT * FROM tunnels WHERE token_hash = ?')
+    .bind(tokenHash)
     .first<TunnelRow>();
   if (row === null) {
     return undefined;
   }
   const ports = await db
-    .prepare('SELECT * FROM tunnel_ports WHERE tunnel_id = ? AND enabled = 1')
+    .prepare(
+      'SELECT * FROM tunnel_ports WHERE tunnel_id = ? AND enabled = 1 ORDER BY protocol ASC, port ASC',
+    )
     .bind(row.id)
     .all<PortRow>();
   return toTunnel(row, (ports.results ?? []).map(toPort));
@@ -290,20 +302,19 @@ export async function findTunnelByNetworkName(
 export async function insertTunnel(
   db: D1Database,
   tunnel: Tunnel,
-  secretEnc: string,
+  tokenHash: string,
 ): Promise<void> {
   const statements = [
     db
       .prepare(
-        `INSERT INTO tunnels (id, name, network_name, network_secret_enc, relay_url, enabled, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+        `INSERT INTO tunnels (id, name, token_hash, token_prefix, enabled, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?)`,
       )
       .bind(
         tunnel.id,
         tunnel.name,
-        tunnel.networkName,
-        secretEnc,
-        tunnel.relayUrl,
+        tokenHash,
+        tunnel.tokenPrefix,
         tunnel.enabled ? 1 : 0,
         tunnel.createdAt,
         tunnel.updatedAt,
@@ -322,42 +333,36 @@ export async function insertTunnel(
 /**
  * 更新隧道。ports 为 undefined 时保持端口白名单不变；
  * 传入数组时全量替换（先删后插，在同一个 batch 中保证原子性）。
+ *
+ * tokenHash 仅在轮换令牌时提供。
  */
 export async function updateTunnel(
   db: D1Database,
   tunnel: Tunnel,
-  secretEnc: string | undefined,
+  tokenHash: string | undefined,
 ): Promise<void> {
   const statements: D1PreparedStatement[] = [];
 
-  if (secretEnc === undefined) {
+  if (tokenHash === undefined) {
     statements.push(
       db
         .prepare(
-          `UPDATE tunnels SET name = ?, network_name = ?, relay_url = ?, enabled = ?, updated_at = ?
+          `UPDATE tunnels SET name = ?, token_prefix = ?, enabled = ?, updated_at = ?
            WHERE id = ?`,
         )
-        .bind(
-          tunnel.name,
-          tunnel.networkName,
-          tunnel.relayUrl,
-          tunnel.enabled ? 1 : 0,
-          tunnel.updatedAt,
-          tunnel.id,
-        ),
+        .bind(tunnel.name, tunnel.tokenPrefix, tunnel.enabled ? 1 : 0, tunnel.updatedAt, tunnel.id),
     );
   } else {
     statements.push(
       db
         .prepare(
-          `UPDATE tunnels SET name = ?, network_name = ?, network_secret_enc = ?, relay_url = ?, enabled = ?, updated_at = ?
+          `UPDATE tunnels SET name = ?, token_hash = ?, token_prefix = ?, enabled = ?, updated_at = ?
            WHERE id = ?`,
         )
         .bind(
           tunnel.name,
-          tunnel.networkName,
-          secretEnc,
-          tunnel.relayUrl,
+          tokenHash,
+          tunnel.tokenPrefix,
           tunnel.enabled ? 1 : 0,
           tunnel.updatedAt,
           tunnel.id,
@@ -449,24 +454,35 @@ export async function deleteRoute(db: D1Database, id: string): Promise<number> {
   return result.meta.changes ?? 0;
 }
 
-/* -------------------------------- 节点 -------------------------------- */
+/* ------------------------------ 主机端 agent ------------------------------ */
 
-export async function listNodes(db: D1Database, limit = 200): Promise<NodeRecord[]> {
+export async function listAgents(db: D1Database, limit = 200): Promise<AgentRecord[]> {
   const rows = await db
-    .prepare('SELECT * FROM nodes ORDER BY last_seen DESC LIMIT ?')
+    .prepare('SELECT * FROM agents ORDER BY last_seen DESC LIMIT ?')
     .bind(limit)
-    .all<NodeRow>();
-  return (rows.results ?? []).map(toNode);
+    .all<AgentRow>();
+  return (rows.results ?? []).map(toAgent);
 }
 
-export async function countNodes(db: D1Database): Promise<number> {
-  const row = await db.prepare('SELECT COUNT(*) AS total FROM nodes').first<{ total: number }>();
+export async function findAgentByTunnelId(
+  db: D1Database,
+  tunnelId: string,
+): Promise<AgentRecord | undefined> {
+  const row = await db
+    .prepare('SELECT * FROM agents WHERE tunnel_id = ?')
+    .bind(tunnelId)
+    .first<AgentRow>();
+  return row === null ? undefined : toAgent(row);
+}
+
+export async function countAgents(db: D1Database): Promise<number> {
+  const row = await db.prepare('SELECT COUNT(*) AS total FROM agents').first<{ total: number }>();
   return row?.total ?? 0;
 }
 
-export async function countOnlineNodes(db: D1Database, since: number): Promise<number> {
+export async function countOnlineAgents(db: D1Database, since: number): Promise<number> {
   const row = await db
-    .prepare('SELECT COUNT(*) AS total FROM nodes WHERE last_seen >= ?')
+    .prepare('SELECT COUNT(*) AS total FROM agents WHERE last_seen >= ?')
     .bind(since)
     .first<{ total: number }>();
   return row?.total ?? 0;
@@ -483,92 +499,48 @@ export async function countRoutes(db: D1Database): Promise<number> {
 }
 
 /**
- * 记录节点心跳。
+ * 记录 agent 上线或心跳。
  *
- * 以 instance_id 为唯一键 UPSERT：节点重启后 instance_id 保持稳定，
- * 因此不会产生重复记录。tunnel_id 通过组网名反查得到。
+ * 以 tunnel_id 为冲突键：一台主机对应一个 tunnel，重连不该产生重复记录。
  */
-export async function upsertNodeHeartbeat(
+export async function upsertAgent(
   db: D1Database,
   input: {
-    instanceId: string;
-    machineId: string | null;
+    tunnelId: string;
     hostname: string | null;
-    tunnelId: string | null;
-    easytierVersion: string | null;
-    ipv4: string | null;
+    version: string | null;
+    reportedPorts: number[];
     now: number;
   },
 ): Promise<void> {
   await db
     .prepare(
-      `INSERT INTO nodes (id, instance_id, machine_id, hostname, tunnel_id, ipv4, easytier_version, last_seen, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-       ON CONFLICT(instance_id) DO UPDATE SET
-         machine_id = excluded.machine_id,
+      `INSERT INTO agents (id, tunnel_id, hostname, version, reported_ports, last_seen, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT(tunnel_id) DO UPDATE SET
          hostname = excluded.hostname,
-         tunnel_id = excluded.tunnel_id,
-         ipv4 = excluded.ipv4,
-         easytier_version = excluded.easytier_version,
+         version = excluded.version,
+         reported_ports = excluded.reported_ports,
          last_seen = excluded.last_seen`,
     )
     .bind(
       crypto.randomUUID(),
-      input.instanceId,
-      input.machineId,
-      input.hostname,
       input.tunnelId,
-      input.ipv4,
-      input.easytierVersion,
+      input.hostname,
+      input.version,
+      JSON.stringify(input.reportedPorts),
       input.now,
       input.now,
     )
     .run();
 }
 
-/** 清理长期未上报的节点记录，避免节点表无限增长。 */
-export async function pruneStaleNodes(db: D1Database, before: number): Promise<number> {
-  const result = await db.prepare('DELETE FROM nodes WHERE last_seen < ?').bind(before).run();
+/** 更新心跳时间，不改动其他字段。 */
+export async function touchAgent(db: D1Database, tunnelId: string, now: number): Promise<void> {
+  await db.prepare('UPDATE agents SET last_seen = ? WHERE tunnel_id = ?').bind(now, tunnelId).run();
+}
+
+export async function deleteAgent(db: D1Database, tunnelId: string): Promise<number> {
+  const result = await db.prepare('DELETE FROM agents WHERE tunnel_id = ?').bind(tunnelId).run();
   return result.meta.changes ?? 0;
-}
-
-/**
- * 查询某实例已归属的 tunnel。
- *
- * 归属关系在节点首次通过 REST 拉取配置时写入。
- * 心跳只做「读取」，不重新推断，避免误把节点划归到错误的隧道。
- */
-export async function findNodeTunnelMapping(
-  db: D1Database,
-  instanceId: string,
-): Promise<string | undefined> {
-  const row = await db
-    .prepare('SELECT tunnel_id FROM nodes WHERE instance_id = ? AND tunnel_id IS NOT NULL')
-    .bind(instanceId)
-    .first<{ tunnel_id: string }>();
-  return row?.tunnel_id ?? undefined;
-}
-
-/**
- * 建立实例与 tunnel 的归属关系。
- *
- * 在客户端拉取配置时调用：能拉到某个 tunnel 的配置，
- * 说明它确实是该隧道的成员。
- */
-export async function bindNodeToTunnel(
-  db: D1Database,
-  instanceId: string,
-  tunnelId: string,
-  now: number,
-): Promise<void> {
-  await db
-    .prepare(
-      `INSERT INTO nodes (id, instance_id, machine_id, hostname, tunnel_id, ipv4, easytier_version, last_seen, created_at)
-       VALUES (?, ?, NULL, NULL, ?, NULL, NULL, ?, ?)
-       ON CONFLICT(instance_id) DO UPDATE SET
-         tunnel_id = excluded.tunnel_id,
-         last_seen = excluded.last_seen`,
-    )
-    .bind(crypto.randomUUID(), instanceId, tunnelId, now, now)
-    .run();
 }

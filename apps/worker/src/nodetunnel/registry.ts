@@ -1,23 +1,22 @@
-import type { Tunnel, TunnelPort } from '@nodetunnel/shared';
+import type { Tunnel, TunnelPort, TunnelWithToken } from '@nodetunnel/shared';
 
 import type { Env } from '../env.js';
 import * as queries from '../db/queries.js';
-import { decryptSecret, encryptSecret } from '../lib/crypto.js';
+import { generateTunnelToken, hashToken, tokenPrefix } from '../lib/crypto.js';
 import { AppError, ErrorCode, err, ok, type Result } from '../lib/errors.js';
 
 /**
  * 隧道注册表（业务层）。
  *
- * 对上层屏蔽 D1 与加解密细节，只暴露领域操作。
+ * 对上层屏蔽 D1 与令牌哈希细节，只暴露领域操作。
  * 所有写操作在此处做唯一性冲突检测，避免把数据库约束错误泄漏成 500。
+ *
+ * 令牌处理原则：
+ *   - 明文令牌只在「创建」与「轮换」两个时刻返回，此后不可再取回；
+ *   - 库里只存 SHA-256 摘要与前缀，即使数据库泄露也无法直接冒用；
+ *   - 因此没有「读取令牌」这个操作，需要明文就说明该轮换了。
  */
 
-export interface TunnelWithSecret extends Tunnel {
-  /** 明文组网密钥。仅在渲染客户端配置时使用，绝不返回给浏览器。 */
-  networkSecret: string;
-}
-
-/** 读取全部隧道（列表用，不含组网密钥）。 */
 export async function listTunnels(env: Env): Promise<Tunnel[]> {
   return queries.listTunnels(env.DB);
 }
@@ -27,105 +26,63 @@ export async function findTunnel(env: Env, id: string): Promise<Tunnel | undefin
 }
 
 /**
- * 读取隧道并解密其组网密钥。
+ * 校验接入令牌并返回对应隧道。
  *
- * 用于：渲染隧道节点配置、下发给配置服务器。
- * 调用方必须确保结果不进入 HTTP 响应体。
+ * 信令握手使用。返回 undefined 表示令牌无效或隧道已禁用 ——
+ * 调用方不得向客户端区分这两者，避免通过响应差异枚举令牌。
  */
-export async function loadTunnelWithSecret(
+export async function authenticateTunnelToken(
   env: Env,
-  tunnelId: string,
-): Promise<Result<TunnelWithSecret, AppError>> {
-  const tunnel = await queries.findTunnelById(env.DB, tunnelId);
-  if (tunnel === undefined) {
-    return err(new AppError(ErrorCode.NOT_FOUND, '隧道不存在'));
+  token: string,
+): Promise<Tunnel | undefined> {
+  const hash = await hashToken(token);
+  const tunnel = await queries.findTunnelByTokenHash(env.DB, hash);
+  if (tunnel === undefined || !tunnel.enabled) {
+    return undefined;
   }
-
-  const encrypted = await queries.findTunnelSecret(env.DB, tunnelId);
-  if (encrypted === undefined) {
-    return err(new AppError(ErrorCode.NOT_FOUND, '隧道密钥不存在'));
-  }
-
-  const decrypted = await decryptSecret(encrypted, env.NT_MASTER_KEY);
-  if (!decrypted.ok) {
-    return err(decrypted.error);
-  }
-
-  return ok({ ...tunnel, networkSecret: decrypted.value });
-}
-
-/**
- * 按组网名加载隧道及其密钥。
- * 配置服务器心跳需要用组网名反查隧道，以记录节点归属。
- */
-export async function loadTunnelByNetworkName(
-  env: Env,
-  networkName: string,
-): Promise<Result<TunnelWithSecret, AppError>> {
-  const tunnel = await queries.findTunnelByNetworkName(env.DB, networkName);
-  if (tunnel === undefined) {
-    return err(new AppError(ErrorCode.NOT_FOUND, '隧道不存在'));
-  }
-  return loadTunnelWithSecret(env, tunnel.id);
+  return tunnel;
 }
 
 export interface CreateTunnelInput {
   name: string;
-  networkName: string;
-  /** 明文组网密钥，入库前会被加密。 */
-  networkSecret: string;
-  relayUrl: string;
   ports: TunnelPort[];
   enabled?: boolean;
 }
 
 /**
- * 创建隧道。
+ * 创建隧道并生成接入令牌。
  *
- * 冲突检测前置到应用层，返回明确的 CONFLICT 错误而非数据库异常：
- *   - name 与 network_name 都必须唯一；
- *   - 唯一索引仍然保留，作为并发写入的最后防线。
+ * 冲突检测前置到应用层，返回明确的 CONFLICT 错误而非数据库异常；
+ * 唯一索引仍然保留，作为并发写入的最后防线。
  */
 export async function createTunnel(
   env: Env,
   input: CreateTunnelInput,
-): Promise<Result<Tunnel, AppError>> {
+): Promise<Result<TunnelWithToken, AppError>> {
   const byName = await queries.findTunnelByName(env.DB, input.name);
   if (byName !== undefined) {
     return err(new AppError(ErrorCode.CONFLICT, '同名隧道已存在', { field: 'name' }));
   }
-  const byNetwork = await queries.findTunnelByNetworkName(env.DB, input.networkName);
-  if (byNetwork !== undefined) {
-    return err(new AppError(ErrorCode.CONFLICT, '该网络名称已被占用', { field: 'networkName' }));
-  }
 
-  const encrypted = await encryptSecret(input.networkSecret, env.NT_MASTER_KEY);
-  if (!encrypted.ok) {
-    return err(encrypted.error);
-  }
-
+  const token = generateTunnelToken();
   const now = Date.now();
   const tunnel: Tunnel = {
     id: crypto.randomUUID(),
     name: input.name,
-    networkName: input.networkName,
-    relayUrl: input.relayUrl,
+    tokenPrefix: tokenPrefix(token),
     enabled: input.enabled ?? true,
     ports: input.ports,
     createdAt: now,
     updatedAt: now,
   };
 
-  await queries.insertTunnel(env.DB, tunnel, encrypted.value);
-  return ok(tunnel);
+  await queries.insertTunnel(env.DB, tunnel, await hashToken(token));
+  // 唯一一次返回明文令牌的机会。
+  return ok({ ...tunnel, token });
 }
 
 export interface UpdateTunnelInput {
   name?: string;
-  networkName?: string;
-  /** 仅在需要更换组网密钥时提供。 */
-  networkSecret?: string;
-  relayUrl?: string;
   ports?: TunnelPort[];
   enabled?: boolean;
 }
@@ -148,34 +105,43 @@ export async function updateTunnel(
       return err(new AppError(ErrorCode.CONFLICT, '同名隧道已存在', { field: 'name' }));
     }
   }
-  if (input.networkName !== undefined && input.networkName !== existing.networkName) {
-    const byNetwork = await queries.findTunnelByNetworkName(env.DB, input.networkName);
-    if (byNetwork !== undefined && byNetwork.id !== id) {
-      return err(new AppError(ErrorCode.CONFLICT, '该网络名称已被占用', { field: 'networkName' }));
-    }
-  }
-
-  let secretEnc: string | undefined;
-  if (input.networkSecret !== undefined) {
-    const encrypted = await encryptSecret(input.networkSecret, env.NT_MASTER_KEY);
-    if (!encrypted.ok) {
-      return err(encrypted.error);
-    }
-    secretEnc = encrypted.value;
-  }
 
   const updated: Tunnel = {
     ...existing,
     name: input.name ?? existing.name,
-    networkName: input.networkName ?? existing.networkName,
-    relayUrl: input.relayUrl ?? existing.relayUrl,
     enabled: input.enabled ?? existing.enabled,
     ports: input.ports ?? existing.ports,
     updatedAt: Date.now(),
   };
 
-  await queries.updateTunnel(env.DB, updated, secretEnc);
+  await queries.updateTunnel(env.DB, updated, undefined);
   return ok(updated);
+}
+
+/**
+ * 轮换接入令牌。
+ *
+ * 旧令牌立即失效：主机端会因此掉线，需要用新令牌重连。
+ * 这是设计内的行为 —— 轮换的语义就是「把旧凭据作废」。
+ */
+export async function rotateTunnelToken(
+  env: Env,
+  id: string,
+): Promise<Result<TunnelWithToken, AppError>> {
+  const existing = await queries.findTunnelById(env.DB, id);
+  if (existing === undefined) {
+    return err(new AppError(ErrorCode.NOT_FOUND, '隧道不存在'));
+  }
+
+  const token = generateTunnelToken();
+  const updated: Tunnel = {
+    ...existing,
+    tokenPrefix: tokenPrefix(token),
+    updatedAt: Date.now(),
+  };
+
+  await queries.updateTunnel(env.DB, updated, await hashToken(token));
+  return ok({ ...updated, token });
 }
 
 export async function deleteTunnel(env: Env, id: string): Promise<Result<true, AppError>> {
@@ -183,7 +149,7 @@ export async function deleteTunnel(env: Env, id: string): Promise<Result<true, A
   if (existing === undefined) {
     return err(new AppError(ErrorCode.NOT_FOUND, '隧道不存在'));
   }
-  // 外键 ON DELETE CASCADE 会一并清理 tunnel_ports 与 routes。
+  // 外键 ON DELETE CASCADE 会一并清理 tunnel_ports、routes 与 agents。
   await queries.deleteTunnel(env.DB, id);
   return ok(true);
 }

@@ -1,11 +1,10 @@
 import {
   ADMIN_API_PREFIX,
+  AGENT_ONLINE_WINDOW_SECONDS,
   SESSION_COOKIE,
-  validateNetworkName,
-  validateNetworkSecret,
+  isTargetHostAllowed,
   validatePassword,
   validatePort,
-  validateRelayUrl,
   validateSlug,
   validateTargetHost,
   validateTunnelPorts,
@@ -22,18 +21,14 @@ import { currentAdmin, changePassword, initializeAdmin, isInitialized, login } f
 import { buildClearSessionCookie, buildSessionCookie } from '../lib/session.js';
 import * as registry from '../nodetunnel/registry.js';
 import * as routesRegistry from '../nodetunnel/routes.js';
-import * as nodeRegistry from '../nodetunnel/node-registry.js';
-import { resolveConfigServerUrl, resolveOrigin, resolveRelayUrl } from '../nodetunnel/endpoints.js';
+import * as agentRegistry from '../nodetunnel/agent-registry.js';
+import { resolveAgentUrl, resolveOrigin, resolveSignalingUrl } from '../nodetunnel/endpoints.js';
 import * as queries from '../db/queries.js';
-import { NODE_ONLINE_WINDOW_SECONDS } from '@nodetunnel/shared';
-import { renderTunnelNodeConfig } from '@nodetunnel/protocol';
-import { relayObjectName } from '../relay/app.js';
 
 /**
  * 管理 API（接入层 + 业务编排）。
  *
- * 路由表与 easytier-web 的 /api/v1 保持一致，使普通 EasyTier 客户端
- * 无需修改即可通过 `--config-server` 拉取配置。
+ * 所有端点都以 /api/v1 为前缀，除 auth 与 setup 外均要求管理员会话。
  */
 
 export async function handleAdminApi(
@@ -52,7 +47,7 @@ export async function handleAdminApi(
   }
 
   try {
-    const response = await dispatch(request, env, method, path, url.searchParams);
+    const response = await dispatch(request, env, method, path);
     for (const [key, value] of Object.entries(corsHeaders)) {
       response.headers.set(key, value);
     }
@@ -74,7 +69,6 @@ async function dispatch(
   env: Env,
   method: string,
   path: string,
-  query: URLSearchParams,
 ): Promise<Response> {
   const segments = path
     .slice(ADMIN_API_PREFIX.length)
@@ -90,12 +84,6 @@ async function dispatch(
   // ---------------------------------------------------------------- 初始化
   if (head === 'setup' && method === 'POST') {
     return handleSetup(request, env);
-  }
-
-  // ------------------------------------------------------------ 配置服务器
-  // 普通 EasyTier 客户端通过此端点拉取配置（与 easytier-web 对齐）。
-  if (head === 'machines') {
-    return handleMachines(request, env, method, rest);
   }
 
   // 以下端点均需要管理员会话。
@@ -114,11 +102,11 @@ async function dispatch(
     case 'routes':
       return handleRoutes(request, env, method, rest);
 
-    case 'nodes':
-      return handleNodes(env, method, rest);
+    case 'agents':
+      return handleAgents(env, method, rest);
 
     case 'system':
-      return handleSystem(env, method, rest, query);
+      return handleSystem(request, method, rest);
 
     default:
       throw new AppError(ErrorCode.NOT_FOUND, '接口不存在');
@@ -231,118 +219,39 @@ async function handleSetup(request: Request, env: Env): Promise<Response> {
   }
 
   // 初始化成功后直接签发会话，免去一次登录。
-  const token = await (
-    await import('./auth.js')
-  ).login(env, {
-    username: username.value,
-    password: password.value,
-  });
-  if (!token.ok) {
+  const session = await login(env, { username: username.value, password: password.value });
+  if (!session.ok) {
     // 理论上不会发生；发生则要求用户手动登录。
     return Response.json({ admin: result.value });
   }
 
   return Response.json(
     { admin: result.value },
-    { headers: { 'Set-Cookie': buildSessionCookie(token.value.token, isSecureRequest(request)) } },
+    {
+      headers: { 'Set-Cookie': buildSessionCookie(session.value.token, isSecureRequest(request)) },
+    },
   );
-}
-
-/* --------------------------- 配置下发（客户端） --------------------------- */
-
-/**
- * 与 easytier-web 对齐的配置拉取端点。
- *
- * 普通 EasyTier 客户端使用：
- *   GET /api/v1/machines/:machine-id/networks/config/:inst-id
- * 拉取自身配置。返回的配置已自动填入中继地址、组网名与组网密钥，
- * 并按隧道声明的端口白名单收紧 ACL（默认拒绝入站）。
- */
-async function handleMachines(
-  request: Request,
-  env: Env,
-  method: string,
-  rest: string[],
-): Promise<Response> {
-  // rest: [machineId, 'networks', 'config', instId]
-  if (rest.length < 4 || rest[1] !== 'networks' || rest[2] !== 'config') {
-    throw new AppError(ErrorCode.NOT_FOUND, '接口不存在');
-  }
-
-  const machineId = validateUuid(rest[0]);
-  if (!machineId.ok) {
-    throw new AppError(ErrorCode.VALIDATION_FAILED, machineId.message, { field: 'machine-id' });
-  }
-  const instId = validateUuid(rest[3]);
-  if (!instId.ok) {
-    throw new AppError(ErrorCode.VALIDATION_FAILED, instId.message, { field: 'inst-id' });
-  }
-
-  if (method !== 'GET') {
-    throw new AppError(ErrorCode.NOT_FOUND, '仅支持 GET');
-  }
-
-  // 客户端通过查询参数声明它要接入的隧道组网名。
-  const networkName = new URL(request.url).searchParams.get('network');
-  const networkCheck = validateNetworkName(networkName);
-  if (!networkCheck.ok) {
-    throw new AppError(ErrorCode.VALIDATION_FAILED, '缺少或非法的 network 查询参数', {
-      field: 'network',
-    });
-  }
-
-  const tunnel = await registry.loadTunnelByNetworkName(env, networkCheck.value);
-  if (!tunnel.ok) {
-    throw tunnel.error;
-  }
-  if (!tunnel.value.enabled) {
-    throw new AppError(ErrorCode.TUNNEL_DISABLED);
-  }
-
-  const origin = resolveOrigin(request);
-  const config = renderTunnelNodeConfig({
-    instanceId: instId.value,
-    instanceName: `node-${instId.value.slice(0, 8)}`,
-    networkName: tunnel.value.networkName,
-    networkSecret: tunnel.value.networkSecret,
-    relayUrl: resolveRelayUrl(origin, tunnel.value.networkName),
-    ports: tunnel.value.ports,
-  });
-
-  // 记录归属关系，供心跳与后台展示使用。
-  await queries.bindNodeToTunnel(env.DB, instId.value, tunnel.value.id, Date.now());
-
-  logger.info('network_config_served', {
-    machineId: machineId.value,
-    instId: instId.value,
-    tunnelId: tunnel.value.id,
-  });
-
-  // 返回纯文本 TOML：客户端将其作为实例配置使用。
-  return new Response(config, {
-    headers: { 'Content-Type': 'text/plain; charset=utf-8' },
-  });
 }
 
 /* ------------------------------- 仪表盘 ------------------------------- */
 
-async function dashboardStats(env: Env): Promise<DashboardStats & { relayUrl: string }> {
-  const since = Date.now() - NODE_ONLINE_WINDOW_SECONDS * 1000;
-  const [tunnelCount, routeCount, nodeCount, onlineNodeCount] = await Promise.all([
+async function dashboardStats(env: Env): Promise<DashboardStats> {
+  const since = Date.now() - AGENT_ONLINE_WINDOW_SECONDS * 1000;
+  const [tunnelCount, routeCount, agentCount, onlineAgentCount] = await Promise.all([
     queries.countTunnels(env.DB),
     queries.countRoutes(env.DB),
-    queries.countNodes(env.DB),
-    queries.countOnlineNodes(env.DB, since),
+    queries.countAgents(env.DB),
+    queries.countOnlineAgents(env.DB, since),
   ]);
 
   return {
     tunnelCount,
     routeCount,
-    nodeCount,
-    onlineNodeCount,
-    // 中继连接数需要探测 Durable Object；此处返回 0，由 /system/relay-health 单独查询。
-    relayConnections: 0,
-    relayUrl: resolveConfigServerUrl('http://placeholder'),
+    agentCount,
+    onlineAgentCount,
+    // 活跃连接数需要逐房间查询 Durable Object，这里不做扇出探测；
+    // 需要精确值时由 /system/signaling 按隧道单独查询。
+    activeConnections: onlineAgentCount,
   };
 }
 
@@ -361,25 +270,17 @@ async function handleTunnels(
     return Response.json({ tunnels: await registry.listTunnels(env) });
   }
 
-  // POST /api/v1/tunnels —— 新建
+  // POST /api/v1/tunnels —— 新建（返回一次性明文令牌）
   if (id === undefined && method === 'POST') {
     const body = await readJson(request);
-    const parsed = parseCreateTunnelBody(body);
+    const parsed = parseTunnelBody(body, true);
     if (!parsed.ok) {
       throw parsed.error;
     }
-    // 未显式指定中继地址时，使用本 Worker 自身的中继。
-    const relayUrl =
-      parsed.value.relayUrl === ''
-        ? resolveRelayUrl(resolveOrigin(request), parsed.value.networkName)
-        : parsed.value.relayUrl;
 
     const result = await registry.createTunnel(env, {
-      name: parsed.value.name,
-      networkName: parsed.value.networkName,
-      networkSecret: parsed.value.networkSecret,
-      relayUrl,
-      ports: parsed.value.ports,
+      name: parsed.value.name as string,
+      ports: parsed.value.ports ?? [],
       enabled: parsed.value.enabled,
     });
     if (!result.ok) {
@@ -424,119 +325,33 @@ async function handleTunnels(
     return Response.json({ ok: true });
   }
 
-  // GET /api/v1/tunnels/:id/config —— 预览下发给客户端的配置
-  if (sub === 'config' && method === 'GET') {
-    const tunnel = await registry.loadTunnelWithSecret(env, id);
-    if (!tunnel.ok) {
-      throw tunnel.error;
+  // POST /api/v1/tunnels/:id/rotate-token —— 轮换接入令牌
+  // 旧令牌立即失效，主机端需用新令牌重连。
+  if (sub === 'rotate-token' && method === 'POST') {
+    const result = await registry.rotateTunnelToken(env, id);
+    if (!result.ok) {
+      throw result.error;
     }
-
-    const origin = resolveOrigin(request);
-    const instanceId = new URL(request.url).searchParams.get('instance-id') ?? crypto.randomUUID();
-    const config = renderTunnelNodeConfig({
-      instanceId,
-      instanceName: `node-${instanceId.slice(0, 8)}`,
-      networkName: tunnel.value.networkName,
-      networkSecret: tunnel.value.networkSecret,
-      relayUrl: resolveRelayUrl(origin, tunnel.value.networkName),
-      ports: tunnel.value.ports,
-    });
-
-    // 预览会包含明文组网密钥，仅供已登录管理员查看。
-    return new Response(config, {
-      headers: { 'Content-Type': 'text/plain; charset=utf-8' },
-    });
+    logger.info('tunnel_token_rotated', { tunnelId: id });
+    return Response.json({ tunnel: result.value });
   }
 
   throw new AppError(ErrorCode.NOT_FOUND, '接口不存在');
 }
 
 /**
- * 解析「新建隧道」请求体。
+ * 解析并校验隧道请求体。
  *
- * 与更新不同，创建时所有关键字段都是必填的，
- * 因此这里返回字段齐全的类型，交由类型系统保证调用点不会漏填。
+ * isCreate 为 true 时 name 必填；其余字段可选。
+ * 注意这里不再接受组网名、组网密钥或中继地址 —— 接入令牌由服务端生成，
+ * 不接受客户端指定。
  */
-function parseCreateTunnelBody(body: Record<string, unknown>): Result<
-  {
-    name: string;
-    networkName: string;
-    networkSecret: string;
-    relayUrl: string;
-    ports: { port: number; protocol: 'tcp' | 'udp' }[];
-    enabled: boolean;
-  },
-  AppError
-> {
-  const name = typeof body.name === 'string' ? body.name.trim() : '';
-  if (name === '') {
-    return err(new AppError(ErrorCode.VALIDATION_FAILED, '隧道名称不能为空', { field: 'name' }));
-  }
-  if (name.length > 64) {
-    return err(
-      new AppError(ErrorCode.VALIDATION_FAILED, '隧道名称不能超过 64 字符', { field: 'name' }),
-    );
-  }
-
-  const networkName = validateNetworkName(body.networkName);
-  if (!networkName.ok) {
-    return err(
-      new AppError(ErrorCode.VALIDATION_FAILED, networkName.message, { field: 'networkName' }),
-    );
-  }
-
-  const networkSecret = validateNetworkSecret(body.networkSecret);
-  if (!networkSecret.ok) {
-    return err(
-      new AppError(ErrorCode.VALIDATION_FAILED, networkSecret.message, { field: 'networkSecret' }),
-    );
-  }
-
-  // relayUrl 允许省略：省略时由调用方填入本 Worker 自身的中继地址。
-  let relayUrl = '';
-  if (body.relayUrl !== undefined) {
-    const relay = validateRelayUrl(body.relayUrl);
-    if (!relay.ok) {
-      return err(new AppError(ErrorCode.VALIDATION_FAILED, relay.message, { field: 'relayUrl' }));
-    }
-    relayUrl = relay.value;
-  }
-
-  const ports = validateTunnelPorts(body.ports ?? []);
-  if (!ports.ok) {
-    return err(new AppError(ErrorCode.VALIDATION_FAILED, ports.message, { field: 'ports' }));
-  }
-
-  let enabled = true;
-  if (body.enabled !== undefined) {
-    if (typeof body.enabled !== 'boolean') {
-      return err(
-        new AppError(ErrorCode.VALIDATION_FAILED, 'enabled 必须是布尔值', { field: 'enabled' }),
-      );
-    }
-    enabled = body.enabled;
-  }
-
-  return ok({
-    name,
-    networkName: networkName.value,
-    networkSecret: networkSecret.value,
-    relayUrl,
-    ports: ports.value,
-    enabled,
-  });
-}
-
-/** 解析并校验隧道请求体。isCreate 为 true 时要求必填字段齐全。 */
 function parseTunnelBody(
   body: Record<string, unknown>,
   isCreate: boolean,
 ): Result<
   {
     name?: string;
-    networkName?: string;
-    networkSecret?: string;
-    relayUrl?: string;
     ports?: { port: number; protocol: 'tcp' | 'udp' }[];
     enabled?: boolean;
   },
@@ -544,9 +359,6 @@ function parseTunnelBody(
 > {
   const output: {
     name?: string;
-    networkName?: string;
-    networkSecret?: string;
-    relayUrl?: string;
     ports?: { port: number; protocol: 'tcp' | 'udp' }[];
     enabled?: boolean;
   } = {};
@@ -562,37 +374,6 @@ function parseTunnelBody(
       );
     }
     output.name = name;
-  }
-
-  if (body.networkName !== undefined || isCreate) {
-    const networkName = validateNetworkName(body.networkName);
-    if (!networkName.ok) {
-      return err(
-        new AppError(ErrorCode.VALIDATION_FAILED, networkName.message, { field: 'networkName' }),
-      );
-    }
-    output.networkName = networkName.value;
-  }
-
-  if (body.networkSecret !== undefined || isCreate) {
-    const secret = validateNetworkSecret(body.networkSecret);
-    if (!secret.ok) {
-      return err(
-        new AppError(ErrorCode.VALIDATION_FAILED, secret.message, { field: 'networkSecret' }),
-      );
-    }
-    output.networkSecret = secret.value;
-  }
-
-  if (body.relayUrl !== undefined) {
-    const relay = validateRelayUrl(body.relayUrl);
-    if (!relay.ok) {
-      return err(new AppError(ErrorCode.VALIDATION_FAILED, relay.message, { field: 'relayUrl' }));
-    }
-    output.relayUrl = relay.value;
-  } else if (isCreate) {
-    // 创建时允许省略，表示使用本 Worker 自身的中继。
-    output.relayUrl = undefined;
   }
 
   if (body.ports !== undefined) {
@@ -718,6 +499,19 @@ function parseRouteBody(
     if (!host.ok) {
       return err(new AppError(ErrorCode.VALIDATION_FAILED, host.message, { field: 'targetHost' }));
     }
+    // 在这里就拒绝公网地址，而不是等到转发时才拒。
+    // 理由：让管理员在配置时就拿到明确反馈，而不是等到用户访问失败才发现；
+    // 同时这是一道独立的防线 —— 转发层也会再判一次，两层都不依赖对方。
+    if (!isTargetHostAllowed(host.value)) {
+      return err(
+        new AppError(
+          ErrorCode.FORBIDDEN,
+          `目标地址 ${host.value} 不在允许的内网范围内。只允许回环地址与私有网段，` +
+            '否则本服务会变成可被滥用的开放代理。',
+          { field: 'targetHost' },
+        ),
+      );
+    }
     output.targetHost = host.value;
   }
 
@@ -741,49 +535,31 @@ function parseRouteBody(
   return ok(output);
 }
 
-/* -------------------------------- 节点 -------------------------------- */
+/* ------------------------------ 主机端 agent ------------------------------ */
 
-async function handleNodes(env: Env, method: string, rest: string[]): Promise<Response> {
+async function handleAgents(env: Env, method: string, rest: string[]): Promise<Response> {
   if (rest.length > 0) {
     throw new AppError(ErrorCode.NOT_FOUND, '接口不存在');
   }
   if (method !== 'GET') {
     throw new AppError(ErrorCode.NOT_FOUND, '接口不存在');
   }
-  return Response.json({ nodes: await nodeRegistry.listNodes(env) });
+  return Response.json({ agents: await agentRegistry.listAgents(env) });
 }
 
 /* -------------------------------- 系统 -------------------------------- */
 
-async function handleSystem(
-  env: Env,
-  method: string,
-  rest: string[],
-  query: URLSearchParams,
-): Promise<Response> {
+async function handleSystem(request: Request, method: string, rest: string[]): Promise<Response> {
   const [action] = rest;
 
-  if (action === 'config-server' && method === 'GET') {
-    const origin = query.get('origin') ?? 'http://127.0.0.1:8787';
-    return Response.json({ url: resolveConfigServerUrl(origin) });
-  }
-
-  if (action === 'relay-health' && method === 'GET') {
-    const network = query.get('network') ?? '';
-    try {
-      // 复用中继处理器导出的对象名解析，确保与真实中继路由到同一个 Durable Object。
-      const response = await env.EASYTIER_RELAY.getByName(relayObjectName(network)).fetch(
-        new Request('https://internal/health', { method: 'GET' }),
-      );
-      const body = (await response.json().catch(() => ({}))) as Record<string, unknown>;
-      return Response.json({ ok: response.ok, ...body }, { status: 200 });
-    } catch (error) {
-      logger.warn('relay_health_probe_failed', {
-        network,
-        error: error instanceof Error ? error.message : String(error),
-      });
-      return Response.json({ ok: false, state: 'stopped', connections: 0 });
-    }
+  // GET /api/v1/system/endpoints —— 主机端与门户需要的接入地址。
+  // 由服务端给出而不是让前端自己拼，避免协议（ws/wss）判断出现分歧。
+  if (action === 'endpoints' && method === 'GET') {
+    const origin = resolveOrigin(request);
+    return Response.json({
+      agentUrl: resolveAgentUrl(origin),
+      signalingUrl: resolveSignalingUrl(origin),
+    });
   }
 
   throw new AppError(ErrorCode.NOT_FOUND, '接口不存在');
