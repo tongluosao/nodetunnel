@@ -1,6 +1,7 @@
 import type { Route } from '@nodetunnel/shared';
 
 import type { Env } from '../env.js';
+import { logger } from '../lib/logger.js';
 import { findEnabledRouteByHostname, findEnabledRouteBySlug } from './routes.js';
 
 /**
@@ -45,17 +46,32 @@ export async function resolveRouteForHost(env: Env, hostname: string): Promise<R
     return undefined;
   }
 
-  const explicit = await findEnabledRouteByHostname(env, hostname);
-  if (explicit !== undefined) {
-    return explicit;
-  }
-
-  if (hostname.endsWith('.localhost')) {
-    const slug = hostname.slice(0, -'.localhost'.length);
-    // 只接受单层标签，避免 a.b.localhost 这类无意义输入触发查询。
-    if (slug !== '' && !slug.includes('.')) {
-      return findEnabledRouteBySlug(env, slug);
+  try {
+    const explicit = await findEnabledRouteByHostname(env, hostname);
+    if (explicit !== undefined) {
+      return explicit;
     }
+
+    if (hostname.endsWith('.localhost')) {
+      const slug = hostname.slice(0, -'.localhost'.length);
+      // 只接受单层标签，避免 a.b.localhost 这类无意义输入触发查询。
+      if (slug !== '' && !slug.includes('.')) {
+        return findEnabledRouteBySlug(env, slug);
+      }
+    }
+  } catch (error) {
+    // 数据库不可用（表缺失、D1 限额、迁移未应用……）时**不能**让整站 500。
+    // 这一步排在管理 API 之前，抛出去会让 /setup、/login 一并挂掉 ——
+    // 数据库出问题时恰恰最需要能进后台看一眼，那才是排查入口。
+    //
+    // 这里按「没有匹配到路由」继续：请求随后落到管理后台或 /health，
+    // 而不会进入隧道转发。也就是 fail-closed —— 宁可隧道在这期间不可用，
+    // 也绝不在「不知道该域名属于谁」的情况下把流量放出去。
+    logger.error('host_route_lookup_failed', {
+      hostname,
+      error: error instanceof Error ? error.message : String(error),
+    });
+    return undefined;
   }
 
   return undefined;
