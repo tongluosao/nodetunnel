@@ -10,8 +10,19 @@ import { AppError, ErrorCode, err, ok, type Result } from './errors.js';
  *  - 会话令牌用 HMAC-SHA256 签名。
  */
 
-/** PBKDF2 迭代次数。OWASP 2023 对 PBKDF2-SHA256 的建议下限为 600,000。 */
-export const PBKDF2_ITERATIONS = 600_000;
+/**
+ * PBKDF2 迭代次数。
+ *
+ * OWASP 2023 对 PBKDF2-SHA256 的建议下限是 600,000，但 **Cloudflare Workers
+ * 的 WebCrypto 硬上限是 100,000**：超过会直接抛
+ * `Pbkdf2 failed: iteration counts above 100000 are not supported`，
+ * 管理员初始化/登录会变成 500。这是运行时限制，不是配置问题，
+ * 所以只能取到上限 —— 宁可落在上限，也不要用一个跑不起来的数。
+ *
+ * 这条限制只在真机部署时暴露：本地 `wrangler dev` 走 Node 的 WebCrypto，
+ * 600,000 能正常跑，因此本地全绿不代表线上能跑。
+ */
+export const PBKDF2_ITERATIONS = 100_000;
 
 /** 盐与 IV 长度（字节）。 */
 const SALT_BYTES = 16;
