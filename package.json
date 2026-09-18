@@ -24,7 +24,7 @@
     "check": "pnpm format:check && pnpm lint && pnpm typecheck && pnpm test",
     "db:migrate:local": "pnpm --filter @nodetunnel/worker db:migrate:local",
     "db:migrate:remote": "pnpm --filter @nodetunnel/worker db:migrate",
-    "deploy": "pnpm --filter @nodetunnel/worker deploy"
+    "deploy": "pnpm build && pnpm --filter @nodetunnel/worker deploy"
   },
   "devDependencies": {
     "@eslint/js": "^9.20.0",

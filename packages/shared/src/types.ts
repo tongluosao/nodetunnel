@@ -52,6 +52,16 @@ export interface Route {
   tunnelId: string;
   targetHost: string;
   targetPort: number;
+  /**
+   * 专属域名（可选）。
+   *
+   * 设置后，该域名下的**所有**路径都直接交给这条路由，应用跑在自己
+   * origin 的根路径上 —— 于是 `/js/app.js`、`/api/xxx` 这类绝对路径
+   * 无需任何改写即可工作，这正是「各种项目直接接上 tunnel 就能跑」的关键。
+   *
+   * 为空表示只能用 `/t/<slug>/` 前缀形式访问（此时应用发出的绝对路径会失效）。
+   */
+  hostname: string | null;
   enabled: boolean;
   createdAt: number;
   updatedAt: number;
@@ -84,6 +94,13 @@ export interface SystemStatus {
   version: string;
   /** 当前是否已有登录会话（仅 /api/v1/auth/status 返回）。 */
   authenticated?: boolean;
+  /**
+   * 当前登录的管理员账号（仅已登录时返回）。
+   *
+   * 带上它是为了让前端刷新页面后能拿到**真实**用户名：用户名可以修改，
+   * 前端若硬编码一个默认名，改过用户名后顶栏会一直显示错误的旧值。
+   */
+  admin?: AdminAccount;
 }
 
 export interface DashboardStats {

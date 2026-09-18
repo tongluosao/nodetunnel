@@ -5,11 +5,14 @@ import { computed, onMounted, reactive, ref } from 'vue';
 import { api, ApiError, type Route, type Tunnel } from '@/api/client';
 
 /**
- * 路由管理（需求 1.2 的管理入口）。
+ * 路由管理。
  *
- * 路由把 <code>/t/&lt;slug&gt;</code> 映射到某台主机上某个端口的服务。
- * 用户访问该路径时，Worker 经信令房间把请求转交给对应隧道的主机端，
- * 再由主机端转发到本地服务。
+ * 访问入口只有「专属域名」一种：该域名整站交给这条路由，应用跑在根路径上，
+ * 因此它发出的绝对路径（/js/app.js、/api/xxx）与浏览器实际请求的路径一致，
+ * 无需改任何应用代码即可接入。
+ *
+ * slug 仍保留，但它只是路由的稳定标识（同时用于 `<slug>.localhost` 这个
+ * 本地免配 DNS 的约定），不再是访问路径。
  */
 
 const routes = ref<Route[]>([]);
@@ -24,6 +27,7 @@ const form = reactive({
   tunnelId: '',
   targetHost: '',
   targetPort: 80,
+  hostname: '',
   enabled: true,
 });
 
@@ -52,6 +56,7 @@ function openCreate(): void {
   form.tunnelId = tunnels.value[0]?.id ?? '';
   form.targetHost = '';
   form.targetPort = 80;
+  form.hostname = '';
   form.enabled = true;
   modalOpen.value = true;
 }
@@ -62,13 +67,14 @@ function openEdit(route: Route): void {
   form.tunnelId = route.tunnelId;
   form.targetHost = route.targetHost;
   form.targetPort = route.targetPort;
+  form.hostname = route.hostname ?? '';
   form.enabled = route.enabled;
   modalOpen.value = true;
 }
 
 async function submit(): Promise<void> {
   if (form.slug.trim() === '') {
-    message.warning('请填写访问路径');
+    message.warning('请填写路由标识');
     return;
   }
   if (form.tunnelId === '') {
@@ -79,6 +85,13 @@ async function submit(): Promise<void> {
     message.warning('请填写目标主机');
     return;
   }
+  if (form.hostname.trim() === '') {
+    // 没有域名就没有访问入口，放过去只会得到一条「配了但打不开」的路由。
+    message.warning('请填写完整域名，否则该路由没有任何访问入口');
+    return;
+  }
+
+  const hostname = form.hostname.trim();
 
   saving.value = true;
   try {
@@ -88,6 +101,7 @@ async function submit(): Promise<void> {
         tunnelId: form.tunnelId,
         targetHost: form.targetHost.trim(),
         targetPort: form.targetPort,
+        hostname,
         enabled: form.enabled,
       });
       message.success('路由已创建');
@@ -97,6 +111,7 @@ async function submit(): Promise<void> {
         tunnelId: form.tunnelId,
         targetHost: form.targetHost.trim(),
         targetPort: form.targetPort,
+        hostname,
         enabled: form.enabled,
       });
       message.success('路由已更新');
@@ -128,9 +143,15 @@ function confirmRemove(route: Route): void {
   });
 }
 
-/** 生成可直接访问的完整地址，便于管理员自测。 */
-function accessUrl(slug: string): string {
-  return `${window.location.origin}/t/${slug}/`;
+/**
+ * 专属域名下的访问地址。
+ *
+ * 端口沿用管理后台当前的端口，仅本地开发有意义；真实部署时域名走 443，
+ * 因此这里只作为「在本地验证」的提示。
+ */
+function hostAccessUrl(hostname: string): string {
+  const port = window.location.port === '' ? '' : `:${window.location.port}`;
+  return `${window.location.protocol}//${hostname}${port}/`;
 }
 
 onMounted(load);
@@ -142,8 +163,8 @@ onMounted(load);
       <div>
         <h2 class="nt-panel-card__title">路由列表</h2>
         <p class="nt-hint" style="margin: 4px 0 0">
-          把访问路径映射到主机上的服务。目标主机必须是主机端所在的内网/回环地址，
-          填写公网地址会被服务端拒绝。
+          每条路由绑定一个完整域名，访问该域名即打开对应的本机服务。
+          目标主机必须是主机端所在的内网/回环地址，填写公网地址会被服务端拒绝。
         </p>
       </div>
       <a-button type="primary" :disabled="tunnels.length === 0" @click="openCreate">
@@ -166,17 +187,32 @@ onMounted(load);
       size="middle"
       :pagination="false"
     >
-      <a-table-column title="访问路径" :width="200">
+      <a-table-column title="专属域名" :width="240">
         <template #default="{ record }">
-          <a :href="accessUrl(record.slug)" target="_blank" rel="noreferrer" class="nt-mono">
-            /t/{{ record.slug }}/
-          </a>
+          <template v-if="record.hostname">
+            <a
+              :href="hostAccessUrl(record.hostname)"
+              target="_blank"
+              rel="noreferrer"
+              class="nt-mono"
+            >
+              {{ record.hostname }}
+            </a>
+          </template>
+          <template v-else>
+            <a-tag color="red">未设置（无法访问）</a-tag>
+          </template>
+        </template>
+      </a-table-column>
+      <a-table-column title="路由标识" :width="150">
+        <template #default="{ record }">
+          <span class="nt-mono">{{ record.slug }}</span>
         </template>
       </a-table-column>
       <a-table-column title="所属隧道" :width="170">
         <template #default="{ record }">{{ tunnelName(record.tunnelId) }}</template>
       </a-table-column>
-      <a-table-column title="目标服务" :width="200">
+      <a-table-column title="目标服务" :width="180">
         <template #default="{ record }">
           <span class="nt-mono">{{ record.targetHost }}:{{ record.targetPort }}</span>
         </template>
@@ -213,8 +249,15 @@ onMounted(load);
   >
     <a-form layout="vertical">
       <a-form-item
-        label="访问路径"
-        help="只能包含小写字母、数字与连字符，例如 my-app。访问地址为 /t/my-app/。"
+        label="专属域名"
+        help="填写完整域名，例如 project1.example.com。该域名必须已指向本 Worker；访问它即打开这条路由对应的服务。"
+      >
+        <a-input v-model:value="form.hostname" placeholder="project1.example.com" />
+      </a-form-item>
+
+      <a-form-item
+        label="路由标识"
+        help="仅作为路由的内部标识，同时提供 <标识>.localhost 这一本地免配 DNS 的访问方式，不再是访问路径。"
       >
         <a-input v-model:value="form.slug" placeholder="my-app" />
       </a-form-item>

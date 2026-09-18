@@ -1,6 +1,16 @@
 /* NodeTunnel 管理后台全局样式。 */
 
+/*
+ * 主题变量。
+ *
+ * 深色为默认值，浅色通过 html[data-theme='light'] 覆盖。所有颜色都必须走
+ * 变量，组件里禁止再写死色值 —— 之前正是因为在深色底上写死了浅色主题的
+ * 前景色，才出现「黑色文字看不清」。Ant Design 组件自身的配色由
+ * ConfigProvider 的 algorithm 同步切换，两边保持一致。
+ */
 :root {
+  color-scheme: dark;
+
   --nt-bg: #0f1420;
   --nt-panel: #171d2b;
   --nt-border: #262e40;
@@ -10,6 +20,41 @@
   --nt-success: #23b26d;
   --nt-warning: #e0a020;
   --nt-danger: #e04b4b;
+
+  /* 派生色：面板层次、表头、代码块与各种交互态。 */
+  --nt-table-head: #1d2434;
+  --nt-pre-bg: #0b0f18;
+  --nt-pre-text: #cfe0ff;
+  --nt-nav-active-text: #ffffff;
+  --nt-hover: rgba(79, 124, 255, 0.07);
+  --nt-nav-hover: rgba(79, 124, 255, 0.09);
+  --nt-nav-active: rgba(79, 124, 255, 0.16);
+  --nt-glow: rgba(79, 124, 255, 0.16);
+  --nt-shadow: 0 18px 48px rgba(0, 0, 0, 0.42);
+}
+
+html[data-theme='light'] {
+  color-scheme: light;
+
+  --nt-bg: #f4f6fb;
+  --nt-panel: #ffffff;
+  --nt-border: #e1e6f0;
+  --nt-text: #1b2233;
+  --nt-text-dim: #6b7688;
+  --nt-accent: #2f5ee0;
+  --nt-success: #128a52;
+  --nt-warning: #b8760c;
+  --nt-danger: #cf3535;
+
+  --nt-table-head: #f2f5fb;
+  --nt-pre-bg: #f7f9fd;
+  --nt-pre-text: #24304a;
+  --nt-nav-active-text: #1b2233;
+  --nt-hover: rgba(47, 94, 224, 0.06);
+  --nt-nav-hover: rgba(47, 94, 224, 0.08);
+  --nt-nav-active: rgba(47, 94, 224, 0.12);
+  --nt-glow: rgba(47, 94, 224, 0.1);
+  --nt-shadow: 0 18px 44px rgba(24, 38, 74, 0.12);
 }
 
 * {
@@ -42,8 +87,7 @@ body {
   min-height: 100%;
   padding: 24px;
   background:
-    radial-gradient(1000px 500px at 50% -10%, rgba(79, 124, 255, 0.16), transparent 70%),
-    var(--nt-bg);
+    radial-gradient(1000px 500px at 50% -10%, var(--nt-glow), transparent 70%), var(--nt-bg);
 }
 
 .nt-card {
@@ -53,7 +97,7 @@ body {
   background: var(--nt-panel);
   border: 1px solid var(--nt-border);
   border-radius: 14px;
-  box-shadow: 0 18px 48px rgba(0, 0, 0, 0.42);
+  box-shadow: var(--nt-shadow);
 }
 
 .nt-brand {
@@ -126,13 +170,13 @@ body {
 }
 
 .nt-nav__item:hover {
-  background: rgba(79, 124, 255, 0.09);
+  background: var(--nt-nav-hover);
   color: var(--nt-text);
 }
 
 .nt-nav__item--active {
-  background: rgba(79, 124, 255, 0.16);
-  color: #fff;
+  background: var(--nt-nav-active);
+  color: var(--nt-nav-active-text);
   font-weight: 550;
 }
 
@@ -243,10 +287,10 @@ body {
   margin: 0;
   padding: 16px;
   overflow: auto;
-  background: #0b0f18;
+  background: var(--nt-pre-bg);
   border: 1px solid var(--nt-border);
   border-radius: 10px;
-  color: #cfe0ff;
+  color: var(--nt-pre-text);
   font-family: 'Cascadia Code', 'JetBrains Mono', Consolas, monospace;
   font-size: 12.5px;
   line-height: 1.65;
@@ -259,17 +303,30 @@ body {
   text-align: center;
 }
 
-/* 让 Ant Design 组件适配深色面板。 */
-.ant-form-item-label > label {
-  color: var(--nt-text) !important;
+/* 端口白名单编辑器：行内输入 + 删除按钮。 */
+.nt-port-editor {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
 }
 
+.nt-port-editor__row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+/*
+ * 让 Ant Design 组件贴合自定义面板底色。
+ * 这里只覆盖「面板层次」相关的背景与边框，前景色交给 ConfigProvider
+ * 的 algorithm 推导 —— 手写前景色正是之前主题错配的根源。
+ */
 .ant-table {
   background: transparent !important;
 }
 
 .ant-table-thead > tr > th {
-  background: #1d2434 !important;
+  background: var(--nt-table-head) !important;
   color: var(--nt-text-dim) !important;
   border-bottom: 1px solid var(--nt-border) !important;
 }
@@ -279,5 +336,5 @@ body {
 }
 
 .ant-table-tbody > tr:hover > td {
-  background: rgba(79, 124, 255, 0.07) !important;
+  background: var(--nt-hover) !important;
 }

@@ -74,14 +74,14 @@ onMounted(load);
     <div class="nt-panel-card">
       <h2 class="nt-panel-card__title">快速上手</h2>
       <p class="nt-hint">
-        先在「隧道管理」创建隧道并声明需要暴露的端口，再到「路由管理」把
-        <code class="nt-mono">/t/&lt;slug&gt;</code> 指向主机上的服务。
+        先在「隧道管理」创建隧道并声明需要暴露的端口，再到「路由管理」给每条路由绑定一个完整域名，
+        访问该域名即打开主机上的服务。
       </p>
       <ol class="nt-hint" style="padding-left: 18px">
         <li>创建隧道：填写名称与要放行的端口；创建后立即复制一次性显示的接入令牌。</li>
         <li>在目标主机上运行 nodetunnel-agent，用该令牌与「系统设置」中的接入地址完成接入。</li>
-        <li>创建路由：填写访问路径与主机上的目标地址、端口。</li>
-        <li>在「主机端」列表确认 agent 已上线。</li>
+        <li>创建路由：填写完整域名，以及主机上的目标地址与端口。</li>
+        <li>在「主机端」列表确认 agent 已上线，然后访问该域名。</li>
       </ol>
     </div>
   </a-spin>

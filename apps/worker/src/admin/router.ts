@@ -5,11 +5,13 @@ import {
   isTargetHostAllowed,
   validatePassword,
   validatePort,
+  validateRouteHostname,
   validateSlug,
   validateTargetHost,
   validateTunnelPorts,
   validateUsername,
   validateUuid,
+  type AdminAccount,
   type DashboardStats,
   type SystemStatus,
 } from '@nodetunnel/shared';
@@ -17,7 +19,14 @@ import {
 import type { Env } from '../env.js';
 import { AppError, ErrorCode, err, ok, type Result } from '../lib/errors.js';
 import { logger } from '../lib/logger.js';
-import { currentAdmin, changePassword, initializeAdmin, isInitialized, login } from './auth.js';
+import {
+  currentAdmin,
+  changePassword,
+  changeUsername,
+  initializeAdmin,
+  isInitialized,
+  login,
+} from './auth.js';
 import { buildClearSessionCookie, buildSessionCookie } from '../lib/session.js';
 import * as registry from '../nodetunnel/registry.js';
 import * as routesRegistry from '../nodetunnel/routes.js';
@@ -115,6 +124,21 @@ async function dispatch(
 
 /* ------------------------------- 认证 ------------------------------- */
 
+/**
+ * 读取管理员账号的完整信息。
+ *
+ * 读失败不应该让 /auth/status 整体失败 —— 该接口是前端启动路径上的第一跳，
+ * 挂掉会导致管理后台直接白屏。因此降级为「只回 id 与用户名」。
+ */
+async function findAdminAccount(env: Env, id: string): Promise<AdminAccount | undefined> {
+  try {
+    return await queries.findAdminById(env.DB, id);
+  } catch (error) {
+    logger.warn('admin_account_read_failed', { error: String(error) });
+    return undefined;
+  }
+}
+
 async function handleAuth(
   request: Request,
   env: Env,
@@ -131,6 +155,8 @@ async function handleAuth(
       initialized,
       version: env.NODETUNNEL_VERSION,
       authenticated: admin !== undefined,
+      // 带上账号，让前端刷新后能显示真实用户名（用户名可改，不能硬编码）。
+      admin: admin === undefined ? undefined : await findAdminAccount(env, admin.id),
     };
     return Response.json(status);
   }
@@ -173,24 +199,43 @@ async function handleAuth(
       throw new AppError(ErrorCode.UNAUTHORIZED);
     }
     const body = await readJson(request);
-    if (typeof body.currentPassword !== 'string') {
-      throw new AppError(ErrorCode.VALIDATION_FAILED, '缺少当前密码', {
-        field: 'currentPassword',
-      });
-    }
+    // 不再要求当前密码：会话即身份凭证，重复验证旧密码只增加操作负担。
     const next = validatePassword(body.newPassword);
     if (!next.ok) {
       throw new AppError(ErrorCode.VALIDATION_FAILED, next.message, { field: 'newPassword' });
     }
 
-    const result = await changePassword(env, admin.id, {
-      currentPassword: body.currentPassword,
-      newPassword: next.value,
-    });
+    const result = await changePassword(env, admin.id, { newPassword: next.value });
     if (!result.ok) {
       throw result.error;
     }
     return Response.json({ ok: true });
+  }
+
+  if (action === 'username' && method === 'PUT') {
+    const admin = await currentAdmin(request, env);
+    if (admin === undefined) {
+      throw new AppError(ErrorCode.UNAUTHORIZED);
+    }
+    const body = await readJson(request);
+    const username = validateUsername(body.username);
+    if (!username.ok) {
+      throw new AppError(ErrorCode.VALIDATION_FAILED, username.message, { field: 'username' });
+    }
+
+    const result = await changeUsername(env, admin.id, username.value);
+    if (!result.ok) {
+      throw result.error;
+    }
+    // 重签会话：令牌载荷里带着用户名，不重签会让界面一直显示旧名字。
+    return Response.json(
+      { admin: result.value.admin },
+      {
+        headers: {
+          'Set-Cookie': buildSessionCookie(result.value.token, isSecureRequest(request)),
+        },
+      },
+    );
   }
 
   throw new AppError(ErrorCode.NOT_FOUND, '接口不存在');
@@ -400,6 +445,31 @@ function parseTunnelBody(
 
 /* -------------------------------- 路由 -------------------------------- */
 
+/**
+ * 拒绝把「当前正在访问管理后台的这个域名」绑成专属域名。
+ *
+ * 专属域名会整站接管该域名（只保留 /agent 与 /signal），一旦绑上，
+ * 管理员下一次请求就会落到应用而不是管理后台，只能改数据库才能恢复。
+ * 这是配置动作可能造成的自锁，必须在写入前 fail-closed 拦下。
+ */
+function assertHostnameNotSelf(request: Request, hostname: string | null | undefined): void {
+  if (hostname === undefined || hostname === null) {
+    return;
+  }
+  const host = request.headers.get('Host');
+  if (host === null) {
+    return;
+  }
+  const current = host.split(':')[0]?.toLowerCase() ?? '';
+  if (current !== '' && current === hostname.toLowerCase()) {
+    throw new AppError(
+      ErrorCode.VALIDATION_FAILED,
+      `不能把当前管理后台所在的域名（${current}）设为专属域名，否则将无法再访问管理后台`,
+      { field: 'hostname' },
+    );
+  }
+}
+
 async function handleRoutes(
   request: Request,
   env: Env,
@@ -418,11 +488,13 @@ async function handleRoutes(
     if (!parsed.ok) {
       throw parsed.error;
     }
+    assertHostnameNotSelf(request, parsed.value.hostname);
     const result = await routesRegistry.createRoute(env, {
       slug: parsed.value.slug as string,
       tunnelId: parsed.value.tunnelId as string,
       targetHost: parsed.value.targetHost as string,
       targetPort: parsed.value.targetPort as number,
+      hostname: parsed.value.hostname,
       enabled: parsed.value.enabled,
     });
     if (!result.ok) {
@@ -437,6 +509,7 @@ async function handleRoutes(
     if (!parsed.ok) {
       throw parsed.error;
     }
+    assertHostnameNotSelf(request, parsed.value.hostname);
     const result = await routesRegistry.updateRoute(env, id, parsed.value);
     if (!result.ok) {
       throw result.error;
@@ -464,6 +537,7 @@ function parseRouteBody(
     tunnelId?: string;
     targetHost?: string;
     targetPort?: number;
+    hostname?: string | null;
     enabled?: boolean;
   },
   AppError
@@ -473,6 +547,7 @@ function parseRouteBody(
     tunnelId?: string;
     targetHost?: string;
     targetPort?: number;
+    hostname?: string | null;
     enabled?: boolean;
   } = {};
 
@@ -521,6 +596,22 @@ function parseRouteBody(
       return err(new AppError(ErrorCode.VALIDATION_FAILED, port.message, { field: 'targetPort' }));
     }
     output.targetPort = port.value;
+  }
+
+  // 专属域名：null 表示显式清除，字符串表示设置，undefined 表示不修改。
+  // 必须区分 null 与 undefined，否则「清除域名」这个操作无法表达。
+  if (body.hostname !== undefined) {
+    if (body.hostname === null) {
+      output.hostname = null;
+    } else {
+      const hostname = validateRouteHostname(body.hostname);
+      if (!hostname.ok) {
+        return err(
+          new AppError(ErrorCode.VALIDATION_FAILED, hostname.message, { field: 'hostname' }),
+        );
+      }
+      output.hostname = hostname.value;
+    }
   }
 
   if (body.enabled !== undefined) {

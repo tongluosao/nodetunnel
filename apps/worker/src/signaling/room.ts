@@ -25,6 +25,7 @@ import {
 import type { Env } from '../env.js';
 import * as queries from '../db/queries.js';
 import { logger } from '../lib/logger.js';
+import { RelayAccumulator } from './relay-chunks.js';
 import { ROLE_HEADER, ROLE_HOST, ROLE_VISITOR, type ConnectionRole } from './roles.js';
 import {
   HOSTNAME_HEADER,
@@ -80,8 +81,7 @@ export class SignalingRoom extends DurableObject<Env> {
   private readonly pendingRelays = new Map<
     string,
     {
-      chunks: Uint8Array[];
-      bytes: number;
+      accumulator: RelayAccumulator;
       resolve: (value: RelayResult) => void;
       timer: ReturnType<typeof setTimeout>;
     }
@@ -303,7 +303,7 @@ export class SignalingRoom extends DurableObject<Env> {
         resolve(undefined);
       }, RELAY_TIMEOUT_MS);
 
-      this.pendingRelays.set(requestId, { chunks: [], bytes: 0, resolve, timer });
+      this.pendingRelays.set(requestId, { accumulator: new RelayAccumulator(), resolve, timer });
       this.send(host, message);
     });
   }
@@ -313,6 +313,10 @@ export class SignalingRoom extends DurableObject<Env> {
    *
    * 分片是必需的：整个响应体可能远大于单条消息上限，
    * 而 WebSocket 与 DataChannel 两条路径共用同一套分片约定。
+   *
+   * 注意响应头只随**第一个**分片到达，因此累加器保留的是首片的头；
+   * 若误取最后一条消息的头，Content-Type 会变成空值，浏览器将以
+   * 「MIME type ('') is not executable」拒绝执行脚本。
    */
   private handleRelayResponse(message: SignalMessage): void {
     const requestId = message.requestId;
@@ -326,10 +330,9 @@ export class SignalingRoom extends DurableObject<Env> {
     }
 
     if (message.bodyBase64 !== undefined && message.bodyBase64 !== '') {
-      const chunk = base64ToBytes(message.bodyBase64);
-      pending.chunks.push(chunk);
-      pending.bytes += chunk.byteLength;
+      pending.accumulator.push(base64ToBytes(message.bodyBase64));
     }
+    pending.accumulator.captureHeaders(message.headers);
 
     if (message.last !== true) {
       return;
@@ -338,18 +341,11 @@ export class SignalingRoom extends DurableObject<Env> {
     clearTimeout(pending.timer);
     this.pendingRelays.delete(requestId);
 
-    const merged = new Uint8Array(pending.bytes);
-    let offset = 0;
-    for (const chunk of pending.chunks) {
-      merged.set(chunk, offset);
-      offset += chunk.byteLength;
-    }
-
     pending.resolve({
       status: message.status ?? 502,
       statusText: message.statusText ?? '',
-      headers: message.headers ?? {},
-      body: merged,
+      headers: pending.accumulator.headers(),
+      body: pending.accumulator.merge(),
     });
   }
 

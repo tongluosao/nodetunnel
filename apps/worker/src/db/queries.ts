@@ -44,6 +44,7 @@ interface RouteRow {
   tunnel_id: string;
   target_host: string;
   target_port: number;
+  hostname: string | null;
   enabled: number;
   created_at: number;
   updated_at: number;
@@ -75,6 +76,7 @@ function toRoute(row: RouteRow): Route {
     tunnelId: row.tunnel_id,
     targetHost: row.target_host,
     targetPort: row.target_port,
+    hostname: row.hostname,
     enabled: row.enabled === 1,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
@@ -218,6 +220,18 @@ export async function updateAdminPassword(
        WHERE id = ?`,
     )
     .bind(input.passwordHash, input.passwordSalt, input.iterations, input.now, input.id)
+    .run();
+  return result.meta.changes ?? 0;
+}
+
+/** 修改用户名。唯一性由 UNIQUE 约束兜底，业务层负责提前给出友好错误。 */
+export async function updateAdminUsername(
+  db: D1Database,
+  input: { id: string; username: string; now: number },
+): Promise<number> {
+  const result = await db
+    .prepare('UPDATE admins SET username = ?, updated_at = ? WHERE id = ?')
+    .bind(input.username, input.now, input.id)
     .run();
   return result.meta.changes ?? 0;
 }
@@ -411,11 +425,28 @@ export async function findRouteBySlug(db: D1Database, slug: string): Promise<Rou
   return row === null ? undefined : toRoute(row);
 }
 
+/**
+ * 按专属域名查找路由。
+ *
+ * 只返回已启用的路由：域名分发是公开入口，与 /t/<slug>/ 同一套可见性规则，
+ * 禁用一条路由必须同时让两种入口都失效，否则禁用形同虚设。
+ */
+export async function findEnabledRouteByHostname(
+  db: D1Database,
+  hostname: string,
+): Promise<Route | undefined> {
+  const row = await db
+    .prepare('SELECT * FROM routes WHERE hostname = ? AND enabled = 1')
+    .bind(hostname)
+    .first<RouteRow>();
+  return row === null ? undefined : toRoute(row);
+}
+
 export async function insertRoute(db: D1Database, route: Route): Promise<void> {
   await db
     .prepare(
-      `INSERT INTO routes (id, slug, tunnel_id, target_host, target_port, enabled, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO routes (id, slug, tunnel_id, target_host, target_port, hostname, enabled, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     )
     .bind(
       route.id,
@@ -423,6 +454,7 @@ export async function insertRoute(db: D1Database, route: Route): Promise<void> {
       route.tunnelId,
       route.targetHost,
       route.targetPort,
+      route.hostname,
       route.enabled ? 1 : 0,
       route.createdAt,
       route.updatedAt,
@@ -433,7 +465,7 @@ export async function insertRoute(db: D1Database, route: Route): Promise<void> {
 export async function updateRoute(db: D1Database, route: Route): Promise<number> {
   const result = await db
     .prepare(
-      `UPDATE routes SET slug = ?, tunnel_id = ?, target_host = ?, target_port = ?, enabled = ?, updated_at = ?
+      `UPDATE routes SET slug = ?, tunnel_id = ?, target_host = ?, target_port = ?, hostname = ?, enabled = ?, updated_at = ?
        WHERE id = ?`,
     )
     .bind(
@@ -441,6 +473,7 @@ export async function updateRoute(db: D1Database, route: Route): Promise<number>
       route.tunnelId,
       route.targetHost,
       route.targetPort,
+      route.hostname,
       route.enabled ? 1 : 0,
       route.updatedAt,
       route.id,

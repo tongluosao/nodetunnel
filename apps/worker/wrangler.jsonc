@@ -12,6 +12,31 @@
   "vars": {
     "NODETUNNEL_VERSION": "0.2.0",
   },
+  // 管理后台静态资源。
+  //
+  // 部署形态下「本 Worker 自己的域名 = 管理后台入口」：前端与 /api/v1 同源，
+  // 因此不需要 CORS，也不需要开发期 vite.config.ts 里的 /api 代理。
+  // 各专属域名则在 index.ts 第 3 步被对应应用整站接管，两者互不干扰。
+  //
+  // run_worker_first 必须开启。Cloudflare 默认会先匹配静态资源，
+  // 只有在没有同名文件时才进入 Worker；那样专属域名下的应用请求
+  // （例如 /index.html、/assets/*.js）会被管理后台的构建产物截胡，
+  // 表现为「隧道通了但打开的是管理后台」。
+  //
+  // 这里用「路径数组」形式而不是布尔 true：数组形式会**关掉** Cloudflare
+  // 对 Sec-Fetch-Mode: navigate 的自动识别。开着那个识别时，带导航头的
+  // 请求会绕过 Worker 直接走静态资源，于是专属域名的首次访问
+  // （浏览器地址栏访问恰好就是导航请求）根本进不到第 3 步的主机路由判断。
+  // 写成 ["/*"] 表示「所有请求都先经 Worker」，语义完全确定。
+  "assets": {
+    // 相对本配置文件解析：apps/worker → apps/admin/dist。
+    "directory": "../../apps/admin/dist",
+    "binding": "ASSETS",
+    // 缺失资源由 admin/spa.ts 显式处理（只对导航请求回退 index.html），
+    // 因此这里保持默认的 404 行为，避免把缺失脚本也变成 HTML。
+    "not_found_handling": "none",
+    "run_worker_first": ["/*"],
+  },
   "durable_objects": {
     "bindings": [
       {
@@ -32,7 +57,10 @@
     {
       "binding": "DB",
       "database_name": "nodetunnel",
-      "database_id": "REPLACE_WITH_REAL_D1_ID",
+      // 真实 database_id，由 `wrangler d1 create nodetunnel` 生成。
+      // 它不是密钥，可以提交到仓库 —— 这正是「导入仓库一键部署」能成立的前提：
+      // Workers Builds 无法替你创建 D1，所以 id 必须预先写死在配置里。
+      "database_id": "1ce77893-3030-424c-b881-fafead8f2903",
       "migrations_dir": "migrations",
     },
   ],

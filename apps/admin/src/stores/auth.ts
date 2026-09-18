@@ -21,12 +21,11 @@ export const useAuthStore = defineStore('auth', () => {
     const status = await api.auth.status();
     initialized.value = status.initialized;
     version.value = status.version;
-    // status 接口只返回是否已登录，管理员信息在登录时获得；
-    // 刷新页面后若已登录，用一次受保护请求确认会话仍有效。
-    if (status.authenticated && admin.value === undefined) {
-      admin.value = { id: '', username: 'admin' };
-    }
-    if (!status.authenticated) {
+    // status 接口在已登录时会带回真实账号，刷新页面后据此恢复顶栏显示。
+    // 不能用硬编码的默认用户名：用户名可以被修改，硬编码会让界面长期显示旧值。
+    if (status.authenticated) {
+      admin.value = status.admin ?? admin.value ?? { id: '', username: '管理员' };
+    } else {
       admin.value = undefined;
     }
     ready.value = true;
@@ -57,5 +56,14 @@ export const useAuthStore = defineStore('auth', () => {
     admin.value = undefined;
   }
 
-  return { admin, initialized, version, ready, refresh, login, setup, logout };
+  /** 改名后同步本地状态，避免顶栏继续显示旧用户名。 */
+  function setUsername(username: string): void {
+    if (admin.value === undefined) {
+      admin.value = { id: '', username };
+      return;
+    }
+    admin.value = { ...admin.value, username };
+  }
+
+  return { admin, initialized, version, ready, refresh, login, setup, logout, setUsername };
 });

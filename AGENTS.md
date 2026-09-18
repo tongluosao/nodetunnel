@@ -14,7 +14,10 @@ NodeTunnel 是一个部署在 Cloudflare Workers 上的自托管内网穿透系�
    agent 配对。房间负责转发 WebRTC 信令（SDP / ICE 候选），并在打洞失败时
    转发中继帧。
 2. **隧道编排**：以 `tunnel` 为中心管理接入令牌与端口白名单，并把
-   `/t/<slug>/` 的 HTTP 请求经房间转发到主机端被放行的服务。
+   **专属域名**上的 HTTP 请求经房间转发到主机端被放行的服务。
+   路由表里填的是完整域名（如 `project1.example.com`），
+   应用跑在根路径上，因此应用发出的绝对路径不需要任何改写。
+   本地开发期有一条快捷约定：`<slug>.localhost` 自动指向同名路由。
 3. **主机端接入**：用户在自己内网机器上运行 `nodetunnel-agent`，用接入令牌
    连出到 Worker。它主动连出，因此内网机器**不需要任何公网入口**。
 
@@ -87,8 +90,15 @@ pnpm test                    # 全部工作区测试
 
 ```bash
 pnpm build                   # turbo 构建全部产物
-pnpm deploy                  # 部署 Worker（需先在 wrangler.jsonc 填入真实 D1 id）
+pnpm deploy                  # 先 pnpm build 再 wrangler deploy（需先填入真实 D1 id）
 ```
+
+部署形态下管理后台的静态资源由 Worker 自己提供（`apps/worker/wrangler.jsonc`
+的 `assets` 指向 `apps/admin/dist`），因此 Worker 自身的域名就是管理后台入口，
+前端与 `/api/v1` **同源**，不再需要 CORS 与开发期的 Vite 代理。
+
+完整部署步骤（创建 D1、设置密钥、Workers Builds 从 GitHub 导入、绑定域名）
+见 [docs/deploy-cloudflare.md](docs/deploy-cloudflare.md)。
 
 ### 验证脚本
 
@@ -125,6 +135,8 @@ pnpm --filter @nodetunnel/worker test:watch      # 监听模式
 | ------------- | ---------------------------------- | -------------------------------------------- |
 | `apps/worker` | `test/security-invariants.test.ts` | 端口白名单默认拒绝、协议严格性、地址范围限制 |
 | `apps/worker` | `test/signaling-room-name.test.ts` | 隧道 ID 到 Durable Object 名称的映射         |
+| `apps/worker` | `test/route-hostname.test.ts`      | 专属域名归一化、按 Host 解析路由、拒绝自锁   |
+| `apps/worker` | `test/relay-chunks.test.ts`        | 中继分片累加：首个分片携带响应头（首片优先） |
 | `apps/portal` | `test/transport.test.ts`           | 行分帧、分片还原、HTTP 请求构造与响应解析    |
 | `apps/agent`  | `test/agent.test.ts`               | 参数解析、WebSocket 地址推导、本地转发白名单 |
 
@@ -148,12 +160,12 @@ nodetunnel/
 │   │   ├── migrations/            # D1 迁移（唯一事实来源）
 │   │   ├── src/
 │   │   │   ├── index.ts           # 入口：路径分发、异常兜底、DO 导出
-│   │   │   ├── home.ts            # 首页与 /health
+│   │   │   ├── home.ts            # /health 与纯文本兜底页
 │   │   │   ├── env.d.ts           # Env 接口
-│   │   │   ├── admin/             # 业务层：管理 API 与认证
+│   │   │   ├── admin/             # 业务层：管理 API、认证、SPA 静态资源分发
 │   │   │   ├── nodetunnel/        # 业务层：隧道、路由、agent、地址推导、信令接入
-│   │   │   ├── http-tunnel/       # 业务层：/t/<slug>/ 转发
-│   │   │   ├── signaling/         # 基础层：信令房间 Durable Object
+│   │   │   ├── http-tunnel/       # 业务层：专属域名的 HTTP 转发
+│   │   │   ├── signaling/         # 基础层：信令房间 Durable Object、中继分片累加
 │   │   │   ├── db/                # 基础层：D1 访问
 │   │   │   └── lib/               # 基础层：错误、日志、加密、会话
 │   │   ├── test/
@@ -174,7 +186,9 @@ nodetunnel/
 │   ├── e2e-check.mjs              # 端到端验证
 │   ├── test-target-server.mjs     # 测试用 HTTP 目标服务
 │   └── poc/                       # 阶段 0 可行性验证（独立依赖，见其 README）
-├── docs/webrtc-p2p-status.md      # WebRTC 方案定型的调研过程与结论
+├── docs/
+│   ├── deploy-cloudflare.md       # 部署到 Cloudflare Workers（含从 GitHub 导入）
+│   └── webrtc-p2p-status.md       # WebRTC 方案定型的调研过程与结论
 └── 其他项目代码/                   # 只读参考代码，绝不修改
 ```
 
@@ -375,9 +389,14 @@ pnpm check
   公网目标地址被拒）；
 - 管理后台（初始化、登录、仪表盘、隧道、路由、主机端、设置）；
 - 主机端 agent（信令接入、中继转发、P2P answerer、保活与重连）；
-- HTTP 隧道转发（`/t/<slug>/` → 主机端本机服务，已端到端验证）；
+- HTTP 隧道转发（专属域名 → 主机端本机服务，已端到端验证；
+  `/t/<slug>/` 前缀入口已移除，路径前缀会破坏应用的绝对路径）；
 - 浏览器门户（WebRTC P2P 优先，失败回落中继）；
-- `scripts/e2e-check.mjs` 22 项断言全部通过。
+- 管理后台由 Worker 自身提供静态资源（assets 绑定 + `run_worker_first`），
+  部署后与 `/api/v1` 同源，其它未绑定路由的域名一律打开管理后台；
+- 管理后台深浅色主题切换（CSS 变量 + Ant Design 算法由同一个 `data-theme` 驱动）；
+- 管理员用户名可改；修改密码不再需要验证当前密码；
+- `scripts/e2e-check.mjs` 27 项断言全部通过。
 
 已知限制：
 

@@ -1,9 +1,8 @@
 import {
   MAX_TUNNEL_RESPONSE_BYTES,
-  RELAY_CHUNK_BYTES,
-  ROUTE_PREFIX,
   isPortAllowed,
   isTargetHostAllowed,
+  type Route,
   type TunnelPort,
 } from '@nodetunnel/shared';
 
@@ -11,7 +10,6 @@ import type { Env } from '../env.js';
 import { AppError, ErrorCode } from '../lib/errors.js';
 import { logger } from '../lib/logger.js';
 import * as registry from '../nodetunnel/registry.js';
-import * as routesRegistry from '../nodetunnel/routes.js';
 import { signalingRoomName } from '../signaling/object-name.js';
 import {
   RELAY_SLUG_HEADER,
@@ -23,7 +21,7 @@ import {
  * HTTP 隧道转发（中继回落路径）。
  *
  * 请求流程：
- *   浏览器 --GET /t/<slug>/path--> Worker --(信令房间)-- 主机端 agent --(本地连接)--> 内网服务
+ *   浏览器 --GET /path--> Worker --(信令房间)-- 主机端 agent --(本地连接)--> 内网服务
  *
  * 为什么经 Durable Object 而不是直连：
  *   Worker 无法主动向主机端发起连接（主机端在内网、没有公网入口）。
@@ -35,40 +33,27 @@ import {
  *   请求不经过本模块。但实测本机网络为对称 NAT，打洞成功率低，
  *   因此本模块是常态路径，不是异常兜底。
  *
+ * 入口只有「专属域名」一种：应用跑在自己 origin 的根路径上，
+ * 它发出的绝对路径（/js/app.js、/api/xxx）与浏览器实际请求的路径一致，
+ * 因此任何项目接上就能跑，无需改应用代码。
+ * 曾经存在的 `/t/<slug>/` 前缀入口已移除：前缀必须被剥离才能交给应用，
+ * 而应用发出的绝对路径不带前缀，必然 404 —— 那条入口只能服务
+ * 「纯相对路径」的页面，保留它只会让人误以为能用。
+ *
  * 限制：仅支持 HTTP 明文服务；HTTPS 目标需由主机端侧自行终止 TLS。
  */
 
-export async function handleTunnelRequest(request: Request, env: Env): Promise<Response> {
-  const url = new URL(request.url);
-
-  // 解析 /t/<slug>/<rest...>
-  const remainder = url.pathname.slice(ROUTE_PREFIX.length);
-  const segments = remainder.split('/').filter((segment) => segment !== '');
-
-  if (segments.length === 0) {
-    // 访问 /t 本身：列出可用路由，便于人工排查。
-    const routes = await routesRegistry.listRoutes(env);
-    return Response.json({
-      service: 'nodetunnel',
-      routes: routes
-        .filter((route) => route.enabled)
-        .map((route) => ({
-          slug: route.slug,
-          url: `${ROUTE_PREFIX}/${route.slug}/`,
-          target: `${route.targetHost}:${route.targetPort}`,
-        })),
-    });
-  }
-
-  const slug = (segments[0] as string).toLowerCase();
-  const rest = segments.slice(1);
-
-  const route = await routesRegistry.findEnabledRouteBySlug(env, slug);
-  if (route === undefined) {
-    // ROUTE_PREFIX 本身已带前导斜杠，不能再补一个。
-    throw new AppError(ErrorCode.NOT_FOUND, `路由 ${ROUTE_PREFIX}/${slug} 不存在或已禁用`);
-  }
-
+/**
+ * 专属域名入口。
+ *
+ * 路径与查询串原样透传：任何「补前缀」或「剥前缀」的动作都会破坏
+ * 应用自己发出的绝对路径。
+ */
+export async function handleHostRequest(
+  request: Request,
+  env: Env,
+  route: Route,
+): Promise<Response> {
   const tunnel = await registry.findTunnel(env, route.tunnelId);
   if (tunnel === undefined) {
     throw new AppError(ErrorCode.NOT_FOUND, '该路由所属的隧道不存在');
@@ -81,7 +66,8 @@ export async function handleTunnelRequest(request: Request, env: Env): Promise<R
   // 主机端会再次独立校验一次 —— 不信任 Worker 的结论，两边都拦。
   ensureTargetAllowed(tunnel.ports, route.targetHost, route.targetPort);
 
-  return forwardViaRoom(request, env, tunnel.id, route, rest, url.search);
+  const url = new URL(request.url);
+  return forwardViaRoom(request, env, tunnel.id, route, url.search);
 }
 
 /**
@@ -114,14 +100,12 @@ async function forwardViaRoom(
   env: Env,
   tunnelId: string,
   route: { slug: string; targetHost: string; targetPort: number },
-  rest: string[],
   search: string,
 ): Promise<Response> {
   const room = env.SIGNALING_ROOM.getByName(signalingRoomName(tunnelId));
 
-  const path = rest.length === 0 ? '/' : `/${rest.join('/')}`;
+  // 保留原始路径：专属域名下应用就挂在根路径上。
   const upstream = new URL(request.url);
-  upstream.pathname = path;
   upstream.search = search;
 
   const headers = new Headers(request.headers);
@@ -187,11 +171,3 @@ function buildDownstreamResponse(upstream: Response, slug: string): Response {
     headers,
   });
 }
-
-/** 供管理后台展示使用：生成某隧道的访问前缀。 */
-export function routePrefixFor(slug: string): string {
-  return `${ROUTE_PREFIX}/${slug}`;
-}
-
-/** 中继分片大小，与门户侧共用同一常量，避免两边取值漂移。 */
-export const relayChunkBytes = RELAY_CHUNK_BYTES;

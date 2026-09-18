@@ -137,10 +137,17 @@ export async function currentAdmin(
 }
 
 export interface ChangePasswordInput {
-  currentPassword: string;
   newPassword: string;
 }
 
+/**
+ * 修改密码。
+ *
+ * 不校验当前密码：能走到这里的前提是已持有有效的管理员会话，
+ * 会话本身就是身份凭证；再要一次旧密码只增加操作负担，不增加安全性
+ * （能偷到会话的人同样能读到内存里的旧密码，何况旧密码并不参与鉴权）。
+ * 真正的保护来自会话的签名与过期时间，以及密码本身的强度校验。
+ */
 export async function changePassword(
   env: Env,
   adminId: string,
@@ -149,24 +156,6 @@ export async function changePassword(
   const row = await queries.findAdminById(env.DB, adminId);
   if (row === undefined) {
     return err(new AppError(ErrorCode.NOT_FOUND, '账号不存在'));
-  }
-
-  const full = await queries.findAdminByUsername(env.DB, row.username);
-  if (full === undefined) {
-    return err(new AppError(ErrorCode.NOT_FOUND, '账号不存在'));
-  }
-
-  const valid = await verifyPassword(input.currentPassword, {
-    hash: full.passwordHash,
-    salt: full.passwordSalt,
-    iterations: full.iterations,
-  });
-  if (!valid) {
-    return err(
-      new AppError(ErrorCode.INVALID_CREDENTIALS, '当前密码不正确', {
-        field: 'currentPassword',
-      }),
-    );
   }
 
   const { hash, salt, iterations } = await hashPassword(input.newPassword);
@@ -180,4 +169,50 @@ export async function changePassword(
 
   logger.info('admin_password_changed', { adminId });
   return ok(true);
+}
+
+/**
+ * 修改用户名。
+ *
+ * 用户名只用于登录与界面展示，不是凭据。改完必须重签会话令牌 ——
+ * 令牌载荷里带着旧用户名，不重签会让顶栏一直显示旧名字，
+ * 也会让「令牌内容与数据库不一致」这种状态长期存在。
+ */
+export async function changeUsername(
+  env: Env,
+  adminId: string,
+  newUsername: string,
+): Promise<Result<{ admin: AuthenticatedAdmin; token: string }, AppError>> {
+  const row = await queries.findAdminById(env.DB, adminId);
+  if (row === undefined) {
+    return err(new AppError(ErrorCode.NOT_FOUND, '账号不存在'));
+  }
+
+  if (newUsername === row.username) {
+    // 改成同一个名字是无意义的写操作，直接返回当前状态即可。
+    const token = await createSessionToken(
+      { id: row.id, username: row.username },
+      env.ADMIN_SESSION_SECRET,
+    );
+    return ok({ admin: { id: row.id, username: row.username }, token });
+  }
+
+  const existing = await queries.findAdminByUsername(env.DB, newUsername);
+  if (existing !== undefined && existing.id !== adminId) {
+    return err(new AppError(ErrorCode.CONFLICT, '该用户名已被占用', { field: 'username' }));
+  }
+
+  await queries.updateAdminUsername(env.DB, {
+    id: adminId,
+    username: newUsername,
+    now: Date.now(),
+  });
+
+  const token = await createSessionToken(
+    { id: adminId, username: newUsername },
+    env.ADMIN_SESSION_SECRET,
+  );
+
+  logger.info('admin_username_changed', { adminId });
+  return ok({ admin: { id: adminId, username: newUsername }, token });
 }

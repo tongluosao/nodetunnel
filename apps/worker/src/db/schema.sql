@@ -49,13 +49,16 @@ CREATE TABLE IF NOT EXISTS tunnel_ports (
   UNIQUE (tunnel_id, port, protocol)
 );
 
--- 路由：/t/<slug> -> 某台主机上的目标服务。
+-- 路由：/t/<slug> 或专属域名 -> 某台主机上的目标服务。
 CREATE TABLE IF NOT EXISTS routes (
   id          TEXT PRIMARY KEY,
   slug        TEXT NOT NULL UNIQUE,
   tunnel_id   TEXT NOT NULL REFERENCES tunnels(id) ON DELETE CASCADE,
   target_host TEXT NOT NULL,
   target_port INTEGER NOT NULL,
+  -- 专属域名。设置后该域名的所有路径都直接交给这条路由，应用跑在根路径上，
+  -- 因此绝对路径（/js/app.js、/api/xxx）无需改写即可工作。NULL 表示只用前缀形式。
+  hostname    TEXT,
   enabled     INTEGER NOT NULL DEFAULT 1,
   created_at  INTEGER NOT NULL,
   updated_at  INTEGER NOT NULL
@@ -75,6 +78,9 @@ CREATE TABLE IF NOT EXISTS agents (
 
 CREATE INDEX IF NOT EXISTS idx_routes_slug ON routes (slug);
 CREATE INDEX IF NOT EXISTS idx_routes_tunnel ON routes (tunnel_id);
+-- 部分唯一索引：多条路由可以没有专属域名，但同一域名只能指向一条路由。
+CREATE UNIQUE INDEX IF NOT EXISTS idx_routes_hostname ON routes (hostname)
+  WHERE hostname IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_tunnel_ports_tunnel ON tunnel_ports (tunnel_id);
 CREATE INDEX IF NOT EXISTS idx_tunnels_token ON tunnels (token_hash);
 CREATE INDEX IF NOT EXISTS idx_agents_last_seen ON agents (last_seen);

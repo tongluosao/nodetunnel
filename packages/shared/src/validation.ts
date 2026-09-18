@@ -126,6 +126,41 @@ export function validateTargetHost(input: unknown): Validated<string> {
   return valid(value);
 }
 
+/**
+ * 专属域名。
+ *
+ * 只接受 DNS 名称，不接受端口、路径、协议或 IP 字面量：
+ *   - 端口在运行时由 Host 头剥离，写进来只会造成「看着配了其实匹配不上」；
+ *   - IP 字面量无法用于域名分发，且会与 Worker 自身地址混淆。
+ * 允许 `localhost` 与 `*.localhost`，方便本地不配 DNS 直接验证。
+ */
+const HOSTNAME_LABEL = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/;
+
+export function validateRouteHostname(input: unknown): Validated<string> {
+  if (typeof input !== 'string') {
+    return invalid('专属域名必须是字符串');
+  }
+  const value = input.trim().toLowerCase();
+  if (value === '') {
+    return invalid('专属域名不能为空');
+  }
+  if (value.length > 253) {
+    return invalid('专属域名不能超过 253 个字符');
+  }
+  if (value.includes('/') || value.includes(':') || value.includes(' ')) {
+    return invalid('专属域名不能包含协议、端口或路径，只填域名本身');
+  }
+  const labels = value.split('.');
+  if (labels.some((label) => !HOSTNAME_LABEL.test(label))) {
+    return invalid('专属域名格式不正确');
+  }
+  // 纯数字的点分形式是 IPv4 字面量，不作为专属域名接受。
+  if (/^\d+(\.\d+)*$/.test(value)) {
+    return invalid('专属域名不能是 IP 地址');
+  }
+  return valid(value);
+}
+
 /** 中继地址：必须是 ws:// 或 wss:// 的 WebSocket URL。 */
 export function validateRelayUrl(input: unknown): Validated<string> {
   if (typeof input !== 'string') {

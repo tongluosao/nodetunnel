@@ -9,6 +9,13 @@
     "@nodetunnel/shared#build": {
       "outputs": []
     },
+    "@nodetunnel/worker#build": {
+      // Worker 的 assets 直接指向 apps/admin/dist，
+      // 所以 wrangler 校验静态资源目录之前必须先产出管理后台构建。
+      // 写成显式依赖而不是依赖 turbo 的拓扑推断：两者之间没有包依赖关系。
+      "dependsOn": ["^build", "@nodetunnel/admin#build"],
+      "outputs": ["dist/**", ".wrangler/**"]
+    },
     "typecheck": {
       "dependsOn": ["^build"],
       "outputs": []

@@ -10,6 +10,7 @@
  * 退出码 0 表示全部通过。
  */
 import { spawn } from 'node:child_process';
+import http from 'node:http';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 
@@ -19,6 +20,35 @@ const ADMIN_USER = 'admin';
 const ADMIN_PASS = 'nodetunnel-2026';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
+
+const workerUrl = new URL(WORKER);
+const workerHost = workerUrl.hostname;
+const workerPort = Number(workerUrl.port || 80);
+
+/**
+ * 经专属域名访问隧道。
+ *
+ * 用 node:http 显式指定 Host 头，而不是 fetch：
+ *   1. Host 属于 Fetch 规范的「禁止头」，用 fetch 无法伪造；
+ *   2. 顺带绕开 *.localhost 在本机首次解析极慢（实测 17s）导致的连接超时。
+ * 隧道已不再提供 /t/<slug>/ 前缀入口，专属域名是唯一的访问方式。
+ */
+function tunnelGet(hostname, path = '/') {
+  return new Promise((resolve) => {
+    const req = http.get(
+      { host: workerHost, port: workerPort, path, headers: { Host: hostname } },
+      (res) => {
+        let text = '';
+        res.setEncoding('utf8');
+        res.on('data', (chunk) => {
+          text += chunk;
+        });
+        res.on('end', () => resolve({ status: res.statusCode ?? 0, headers: res.headers, text }));
+      },
+    );
+    req.on('error', (error) => resolve({ status: 0, headers: {}, text: String(error) }));
+  });
+}
 
 const failures = [];
 let sessionCookie = '';
@@ -149,8 +179,10 @@ async function main() {
   check('列表返回令牌前缀', listed?.tokenPrefix === tunnel?.tokenPrefix);
 
   // ---------------------------------------------------------- 建路由
-  log('5/7', '创建路由');
+  log('5/7', '创建路由（专属域名）');
   const slug = `e2e-${Date.now().toString(36)}`;
+  // 专属域名用 <slug>.localhost：本机无需配 DNS 即可解析到 127.0.0.1。
+  const hostname = `${slug}.localhost`;
   const route = await json('/api/v1/routes', {
     method: 'POST',
     body: JSON.stringify({
@@ -158,10 +190,12 @@ async function main() {
       tunnelId,
       targetHost: '127.0.0.1',
       targetPort: TARGET_PORT,
+      hostname,
     }),
   });
   check('创建路由返回 201', route.status === 201);
   check('路由 slug 正确', route.body.route?.slug === slug);
+  check('路由专属域名正确', route.body.route?.hostname === hostname);
 
   // 公网地址必须被拒绝：否则本系统会变成开放代理。
   const blocked = await json('/api/v1/routes', {
@@ -171,13 +205,27 @@ async function main() {
       tunnelId,
       targetHost: '8.8.8.8',
       targetPort: TARGET_PORT,
+      hostname: `${slug}-pub.localhost`,
     }),
   });
   check('拒绝公网目标地址', blocked.status === 403);
 
+  // 同一域名不能绑到两条路由，否则分发结果取决于查询顺序。
+  const dupHost = await json('/api/v1/routes', {
+    method: 'POST',
+    body: JSON.stringify({
+      slug: `${slug}-dup`,
+      tunnelId,
+      targetHost: '127.0.0.1',
+      targetPort: TARGET_PORT,
+      hostname,
+    }),
+  });
+  check('拒绝重复的专属域名', dupHost.status === 409);
+
   // ------------------------------------------------------- 未上线时拒绝
   log('6/7', '主机端未接入时中继必须明确失败');
-  const offline = await fetch(`${WORKER}/t/${slug}/hello`);
+  const offline = await tunnelGet(hostname, '/hello');
   check('未接入时返回 503', offline.status === 503);
 
   // --------------------------------------------------------- 起 agent
@@ -214,13 +262,17 @@ async function main() {
   });
   check('agent 已登记为在线', online);
 
-  // 经中继取回本机服务内容。
-  const proxied = await fetch(`${WORKER}/t/${slug}/hello`);
-  const text = await proxied.text();
+  // 经专属域名取回本机服务内容。
+  const proxied = await tunnelGet(hostname, '/hello');
   check('中继转发返回 200', proxied.status === 200);
-  check('响应体来自目标服务', text.includes('来自隧道内服务的问候'));
+  check('响应体来自目标服务', proxied.text.includes('来自隧道内服务的问候'));
+
+  // 前缀入口已移除：/t/<slug>/ 必须不再可用（否则等于两套访问方式并存）。
+  const legacy = await json(`/t/${slug}/hello`);
+  check('/t/<slug>/ 前缀入口已移除（404）', legacy.status === 404);
 
   // 未在白名单中的端口必须被拒。
+  const denyHost = `${slug}-deny.localhost`;
   const otherRoute = await json('/api/v1/routes', {
     method: 'POST',
     body: JSON.stringify({
@@ -228,10 +280,11 @@ async function main() {
       tunnelId,
       targetHost: '127.0.0.1',
       targetPort: 9999,
+      hostname: denyHost,
     }),
   });
   if (otherRoute.status === 201) {
-    const deniedPort = await fetch(`${WORKER}/t/${slug}-deny/hello`);
+    const deniedPort = await tunnelGet(denyHost, '/hello');
     check('非白名单端口被拒（403）', deniedPort.status === 403);
   }
 

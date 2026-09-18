@@ -123,6 +123,8 @@ export interface AuthStatus {
   initialized: boolean;
   version: string;
   authenticated: boolean;
+  /** 已登录时返回真实账号，用于刷新后恢复顶栏用户名。 */
+  admin?: AdminInfo;
 }
 
 /** 主机端与门户需要的接入地址，由服务端按当前部署域名推导。 */
@@ -144,10 +146,17 @@ export const api = {
         ...json({ username, password }),
       }),
     logout: () => request<{ ok: true }>('/auth/logout', { method: 'POST' }),
-    changePassword: (currentPassword: string, newPassword: string) =>
+    /** 修改密码：不再需要当前密码，会话本身即身份凭证。 */
+    changePassword: (newPassword: string) =>
       request<{ ok: true }>('/auth/password', {
         method: 'PUT',
-        ...json({ currentPassword, newPassword }),
+        ...json({ newPassword }),
+      }),
+    /** 修改用户名：服务端会重签会话，返回更新后的账号信息。 */
+    changeUsername: (username: string) =>
+      request<{ admin: AdminInfo }>('/auth/username', {
+        method: 'PUT',
+        ...json({ username }),
       }),
   },
 
@@ -184,6 +193,8 @@ export const api = {
       tunnelId: string;
       targetHost: string;
       targetPort: number;
+      /** 专属域名（完整域名）。路由没有域名就没有访问入口。 */
+      hostname?: string | null;
       enabled?: boolean;
     }) => request<{ route: Route }>('/routes', { method: 'POST', ...json(input) }),
     update: (
@@ -193,6 +204,8 @@ export const api = {
         tunnelId: string;
         targetHost: string;
         targetPort: number;
+        /** null 表示清除专属域名，undefined 表示保持不变。 */
+        hostname: string | null;
         enabled: boolean;
       }>,
     ) => request<{ route: Route }>(`/routes/${id}`, { method: 'PUT', ...json(input) }),

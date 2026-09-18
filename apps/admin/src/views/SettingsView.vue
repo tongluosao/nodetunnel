@@ -4,10 +4,10 @@ import { computed, onMounted, reactive, ref } from 'vue';
 
 import { api, ApiError } from '@/api/client';
 import { useAuthStore } from '@/stores/auth';
-import { ROUTE_PREFIX, validatePassword } from '@nodetunnel/shared';
+import { validatePassword, validateUsername } from '@nodetunnel/shared';
 
 /**
- * 系统设置：接入信息与管理员改密。
+ * 系统设置：接入信息、管理员账号与密码。
  *
  * 接入地址不再由前端拼接，而是取自 /system/endpoints —— 协议（ws/wss）
  * 与路径的判断只应有一处实现，前端自行推导很容易与实际部署产生分歧。
@@ -15,14 +15,19 @@ import { ROUTE_PREFIX, validatePassword } from '@nodetunnel/shared';
 
 const auth = useAuthStore();
 const saving = ref(false);
+const savingUsername = ref(false);
 const endpointsLoading = ref(false);
 const agentUrl = ref('');
 const signalingUrl = ref('');
 
-const password = reactive({ current: '', next: '', confirm: '' });
-const passwordErrors = reactive({ current: '', next: '', confirm: '' });
+const password = reactive({ next: '', confirm: '' });
+const passwordErrors = reactive({ next: '', confirm: '' });
 
-const routePrefix = computed(() => `${window.location.origin}${ROUTE_PREFIX}/<slug>/`);
+const usernameForm = reactive({ value: '' });
+const usernameError = ref('');
+
+// 进页面时用当前账号填充，避免用户以为要重新输入。
+usernameForm.value = auth.admin?.username ?? '';
 
 /**
  * agent 的 --server 参数要的是 HTTP(S) 地址，而接入地址是 WebSocket 地址。
@@ -66,13 +71,8 @@ async function copy(text: string, label: string): Promise<void> {
 }
 
 function validatePasswordForm(): boolean {
-  passwordErrors.current = '';
   passwordErrors.next = '';
   passwordErrors.confirm = '';
-
-  if (password.current === '') {
-    passwordErrors.current = '请输入当前密码';
-  }
 
   const next = validatePassword(password.next);
   if (!next.ok) {
@@ -83,9 +83,7 @@ function validatePasswordForm(): boolean {
     passwordErrors.confirm = '两次输入的新密码不一致';
   }
 
-  return (
-    passwordErrors.current === '' && passwordErrors.next === '' && passwordErrors.confirm === ''
-  );
+  return passwordErrors.next === '' && passwordErrors.confirm === '';
 }
 
 async function changePassword(): Promise<void> {
@@ -95,15 +93,45 @@ async function changePassword(): Promise<void> {
 
   saving.value = true;
   try {
-    await api.auth.changePassword(password.current, password.next);
-    message.success('密码已更新，请使用新密码重新登录');
-    password.current = '';
+    // 服务端不再要求当前密码：会话本身已经是身份凭证。
+    await api.auth.changePassword(password.next);
+    message.success('密码已更新');
     password.next = '';
     password.confirm = '';
   } catch (error) {
     message.error(error instanceof ApiError ? error.message : '修改密码失败');
   } finally {
     saving.value = false;
+  }
+}
+
+async function changeUsername(): Promise<void> {
+  usernameError.value = '';
+  const value = usernameForm.value.trim();
+
+  const validated = validateUsername(value);
+  if (!validated.ok) {
+    usernameError.value = validated.message;
+    return;
+  }
+  if (value === auth.admin?.username) {
+    message.info('用户名未发生变化');
+    return;
+  }
+
+  savingUsername.value = true;
+  try {
+    const result = await api.auth.changeUsername(value);
+    // 服务端已重签会话，这里同步本地状态，顶栏立即显示新名字。
+    auth.setUsername(result.admin.username);
+    usernameForm.value = result.admin.username;
+    message.success('用户名已更新');
+  } catch (error) {
+    const text = error instanceof ApiError ? error.message : '修改用户名失败';
+    usernameError.value = text;
+    message.error(text);
+  } finally {
+    savingUsername.value = false;
   }
 }
 
@@ -146,11 +174,8 @@ onMounted(loadEndpoints);
         </div>
       </a-descriptions-item>
 
-      <a-descriptions-item label="隧道访问前缀">
-        <div style="display: flex; align-items: center; gap: 10px">
-          <span class="nt-mono">{{ routePrefix }}</span>
-          <a-button size="small" @click="copy(routePrefix, '访问前缀')">复制</a-button>
-        </div>
+      <a-descriptions-item label="隧道访问方式">
+        <span>专属域名（在「路由管理」中为每条路由填写完整域名）</span>
       </a-descriptions-item>
 
       <a-descriptions-item label="服务版本">
@@ -171,18 +196,32 @@ onMounted(loadEndpoints);
   </div>
 
   <div class="nt-panel-card">
-    <h2 class="nt-panel-card__title">修改密码</h2>
-    <p class="nt-hint">修改后当前会话仍有效，建议重新登录一次以确认新密码可用。</p>
+    <h2 class="nt-panel-card__title">管理员账号</h2>
+    <p class="nt-hint">用户名用于登录与界面展示。修改后服务端会重签当前会话，无需重新登录。</p>
 
     <a-form layout="vertical" style="max-width: 420px">
       <a-form-item
-        label="当前密码"
-        :validate-status="passwordErrors.current ? 'error' : ''"
-        :help="passwordErrors.current"
+        label="用户名"
+        :validate-status="usernameError ? 'error' : ''"
+        :help="usernameError || '3–32 位，可含字母、数字、下划线、短横线与点'"
       >
-        <a-input-password v-model:value="password.current" autocomplete="current-password" />
+        <a-input v-model:value="usernameForm.value" autocomplete="username" />
       </a-form-item>
 
+      <a-button type="primary" :loading="savingUsername" @click="changeUsername">
+        更新用户名
+      </a-button>
+    </a-form>
+  </div>
+
+  <div class="nt-panel-card">
+    <h2 class="nt-panel-card__title">修改密码</h2>
+    <p class="nt-hint">
+      修改后当前会话仍有效。这里不需要输入当前密码 —— 能打开本页面即已持有有效会话，
+      会话本身就是身份凭证。
+    </p>
+
+    <a-form layout="vertical" style="max-width: 420px">
       <a-form-item
         label="新密码"
         :validate-status="passwordErrors.next ? 'error' : ''"

@@ -4,12 +4,14 @@ import { computed } from 'vue';
 import { RouterLink, RouterView, useRoute, useRouter } from 'vue-router';
 
 import { useAuthStore } from '@/stores/auth';
+import { useThemeStore, type ThemeMode } from '@/stores/theme';
 
 /**
  * 管理后台主布局：左侧导航 + 顶部栏 + 内容区。
  */
 
 const auth = useAuthStore();
+const themeStore = useThemeStore();
 const route = useRoute();
 const router = useRouter();
 
@@ -26,6 +28,20 @@ const pageTitle = computed(() =>
 );
 
 const username = computed(() => auth.admin?.username ?? '');
+
+/** 主题三态：跟随系统 / 浅色 / 深色。 */
+const themeOptions: { label: string; value: ThemeMode }[] = [
+  { label: '浅色', value: 'light' },
+  { label: '深色', value: 'dark' },
+  { label: '跟随系统', value: 'system' },
+];
+
+/** a-segmented 的 change 回调值是 string | number，这里显式收窄为三态之一。 */
+function onThemeChange(value: string | number): void {
+  if (value === 'light' || value === 'dark' || value === 'system') {
+    themeStore.setMode(value);
+  }
+}
 
 function confirmLogout(): void {
   Modal.confirm({
@@ -66,6 +82,12 @@ function confirmLogout(): void {
       <header class="nt-header">
         <h1 class="nt-header__title">{{ pageTitle }}</h1>
         <div class="nt-header__user">
+          <a-segmented
+            :value="themeStore.mode"
+            :options="themeOptions"
+            size="small"
+            @change="onThemeChange"
+          />
           <span>版本 {{ auth.version || '—' }}</span>
           <span>·</span>
           <span>{{ username || '管理员' }}</span>
