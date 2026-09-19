@@ -1,6 +1,6 @@
 {
   "name": "nodetunnel",
-  "version": "0.2.0",
+  "version": "0.1.0",
   "private": true,
   "type": "module",
   "description": "基于 Cloudflare Worker 与 WebRTC 的自托管内网穿透服务",

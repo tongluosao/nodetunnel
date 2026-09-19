@@ -410,9 +410,16 @@ pnpm check
 
 ### 版本历史
 
-- **0.2.0**：移除 EasyTier 与 WASM 内核，改为 WebRTC 信令 + 接入令牌模型。
-  原因见 `docs/webrtc-p2p-status.md`：上游 `easytier-js` 的宿主实现里
+- **0.1.0**：首个正式发布的版本。
+  形态为「移除 EasyTier 与 WASM 内核，改为 WebRTC 信令 + 接入令牌模型」：
+  原因见 `docs/webrtc-p2p-status.md`，上游 `easytier-js` 的宿主实现里
   7 个 UDP 宿主函数全部返回 `HOST_UNSUPPORTED`，且 `disable_p2p = true`
   对两个 profile 都生效，浏览器侧 P2P 无从实现；同时安全边界依赖内核 ACL，
   内核一旦不再承担数据面，这条边界就消失了。
-- **0.1.0**：基于 EasyTier 中转的初版。
+
+  本版本同时包含：管理后台由 Worker 自身提供静态资源（与 `/api/v1` 同源）、
+  专属域名路由（`/t/<slug>/` 前缀入口已移除）、深浅色主题、
+  以及数据库异常时的 fail-closed 降级。
+
+  > 版本号说明：这一形态在开发期曾标为 0.2.0，首个 Release 时按 0.1.0 发布
+  > （此前并未正式发版）。下文若出现 0.2.0，指的是开发期的同一形态。

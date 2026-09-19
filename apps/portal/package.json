@@ -1,6 +1,6 @@
 {
   "name": "@nodetunnel/portal",
-  "version": "0.2.0",
+  "version": "0.1.0",
   "private": true,
   "type": "module",
   "description": "NodeTunnel 浏览器门户：用原生 WebRTC 直连主机端，失败时回落中继",

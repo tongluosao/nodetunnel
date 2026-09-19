@@ -10,7 +10,7 @@
   // 「No such compatibility flag」而完全无法启动。
   "compatibility_flags": ["nodejs_compat"],
   "vars": {
-    "NODETUNNEL_VERSION": "0.2.0",
+    "NODETUNNEL_VERSION": "0.1.0",
   },
   // 管理后台静态资源。
   //

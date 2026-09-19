@@ -1,0 +1,84 @@
+name: 发布多平台主机端二进制
+
+# 打 tag 时构建 4 个平台的自包含可执行文件，并上传到对应的 Release。
+#
+# 为什么用矩阵而不是在一台机器上交叉构建：
+#   Node SEA 的产物 = 「该平台的官方 node 二进制」+ 注入的代码 blob。
+#   在 Linux 上做不出 Windows 版、在 x64 上也做不出 arm64 版，
+#   只能在各平台原生 runner 上分别构建。
+#
+# 为什么没有 32 位（x86）产物：
+#   Node 官方早已停止发布 linux-x86 / win-x86 构建，SEA 拿不到载体二进制。
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: 构建 ${{ matrix.target }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: linux-x64
+            os: ubuntu-latest
+          - target: linux-arm64
+            os: ubuntu-24.04-arm
+          - target: win-x64
+            os: windows-latest
+          - target: win-arm64
+            os: windows-11-arm
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.22.0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: pnpm
+
+      - name: 安装依赖
+        run: pnpm install --frozen-lockfile
+
+      - name: 构建二进制
+        run: node apps/agent/scripts/build-binary.mjs ${{ matrix.target }}
+
+      # 冒烟测试：产物必须能自己跑起来并打印版本号，
+      # 否则说明 blob 注入失败，不该把坏产物发出去。
+      - name: 冒烟测试
+        shell: bash
+        run: |
+          BIN=$(ls apps/agent/dist-binary/nodetunnel-agent-${{ matrix.target }}*)
+          chmod +x "$BIN"
+          OUT=$("$BIN" --help 2>&1 || true)
+          echo "$OUT"
+          echo "$OUT" | grep -qi "nodetunnel\|用法\|--server\|usage" \
+            || { echo "::error::产物无法运行"; exit 1; }
+
+      - name: 打包
+        shell: bash
+        run: |
+          cd apps/agent/dist-binary
+          BIN=$(ls nodetunnel-agent-${{ matrix.target }}*)
+          if [[ "${{ matrix.target }}" == win-* ]]; then
+            7z a ../../../nodetunnel-agent-${{ matrix.target }}.zip "$BIN"
+          else
+            tar czf ../../../nodetunnel-agent-${{ matrix.target }}.tar.gz "$BIN"
+          fi
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            nodetunnel-agent-${{ matrix.target }}.zip
+            nodetunnel-agent-${{ matrix.target }}.tar.gz
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

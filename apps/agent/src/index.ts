@@ -16,7 +16,9 @@ import { log } from './log.ts';
  * 这条判断在 agent 侧独立执行一次，不信任服务端的结论。
  */
 
-const VERSION = '0.2.0';
+// 版本号硬编码而不是读 package.json：SEA 单文件产物里没有 package.json 可读，
+// 读文件会让二进制直接崩在启动阶段。发布时与根 package.json 一起改。
+const VERSION = '0.1.0';
 
 async function main(): Promise<void> {
   const parsed = parseArgs(process.argv.slice(2));

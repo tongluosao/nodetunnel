@@ -1,6 +1,6 @@
 {
   "name": "@nodetunnel/agent",
-  "version": "0.2.0",
+  "version": "0.1.0",
   "private": true,
   "type": "module",
   "description": "NodeTunnel 主机端桥接服务：接入信令房间，把隧道请求转发到本机服务",
@@ -9,6 +9,7 @@
   },
   "scripts": {
     "build": "node scripts/build.mjs",
+    "build:binary": "node scripts/build-binary.mjs",
     "dev": "node scripts/build.mjs && node dist/agent.mjs",
     "start": "node dist/agent.mjs",
     "typecheck": "tsc --noEmit",
@@ -21,6 +22,7 @@
   "devDependencies": {
     "@types/node": "^22.10.0",
     "esbuild": "^0.25.0",
+    "postject": "1.0.0-alpha.6",
     "typescript": "^5.9.3",
     "vitest": "^3.0.0"
   }

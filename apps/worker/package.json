@@ -1,6 +1,6 @@
 {
   "name": "@nodetunnel/worker",
-  "version": "0.2.0",
+  "version": "0.1.0",
   "private": true,
   "type": "module",
   "description": "NodeTunnel 中心服务：信令房间、中继转发与管理 API",
