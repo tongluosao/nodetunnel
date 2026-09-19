@@ -47,7 +47,11 @@ jobs:
           cache: pnpm
 
       - name: 安装依赖
-        run: pnpm install --frozen-lockfile
+        # 只装 agent 及其依赖，不装整个 workspace。
+        # 原因：workerd（Worker 的本地运行时）没有 Windows ARM64 构建，
+        # 它的 postinstall 会失败并让整条 install 挂掉，而构建 agent
+        # 二进制根本用不到 workerd。
+        run: pnpm install --frozen-lockfile --filter @nodetunnel/agent...
 
       - name: 构建二进制
         run: node apps/agent/scripts/build-binary.mjs ${{ matrix.target }}
