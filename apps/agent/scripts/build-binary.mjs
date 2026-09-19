@@ -27,14 +27,14 @@ import { build } from 'esbuild';
 const root = path.join(path.dirname(fileURLToPath(import.meta.url)), '..');
 const outDir = path.join(root, 'dist-binary');
 
-// SEA 依赖载体二进制里预置的一段 sentinel（fuse）。不同 Node 版本的二进制
-// 布局可能变化，因此固定用一个经过验证的版本，避免换版本后静默产出坏文件。
-// CI 里由 actions/setup-node 提供；本地构建时同样需要这个版本。
-const major = Number(process.versions.node.split('.')[0]);
-if (major !== 22) {
+// SEA 需要载体二进制里预置一段 sentinel（fuse）。这段 hex 会随 Node 版本变化，
+// 所以下面改为动态提取，不再依赖某个具体版本。这里只守住最低版本：
+// SEA 自 Node 20.12 起可用，更早的版本会给出莫名其妙的注入错误。
+const [major = 0, minor = 0] = process.versions.node.split('.').map(Number);
+if (major < 20 || (major === 20 && minor < 12)) {
   console.error(
-    `构建二进制需要 Node 22（当前 ${process.versions.node}）。\n` +
-      `SEA 注入依赖载体二进制内的 sentinel 槽位，只在 Node 22 上做过验证。`,
+    `构建二进制需要 Node >= 20.12（当前 ${process.versions.node}）。\n` +
+      `Node SEA（单文件可执行）自 20.12 起提供。`,
   );
   process.exit(1);
 }
@@ -100,8 +100,15 @@ console.log('[2/4] 已生成 SEA blob');
 // ---------------------------------------------------------------------------
 const binaryName = `nodetunnel-agent-${targetName}${target.ext}`;
 const binaryPath = path.join(outDir, binaryName);
-fs.copyFileSync(process.execPath, binaryPath);
-console.log(`[3/4] 已准备载体二进制：${binaryName}`);
+
+// 必须用 realpath 解析：setup-node 等版本管理器提供的 process.execPath
+// 往往是符号链接，直接 copyFileSync 复制符号链接拿到的不是真正的二进制
+// （或链接目标不完整），后续注入就会找不到 fuse。
+const nodeBinary = fs.realpathSync(process.execPath);
+fs.copyFileSync(nodeBinary, binaryPath);
+console.log(
+  `[3/4] 已准备载体二进制：${binaryName}（${nodeBinary}，${(fs.statSync(binaryPath).size / 1024 / 1024).toFixed(1)} MB）`,
+);
 
 // ---------------------------------------------------------------------------
 // 4. 注入 blob
@@ -114,15 +121,49 @@ console.log(`[3/4] 已准备载体二进制：${binaryName}`);
 // 起子进程需要管道通信来捕获输出，在受限构建环境里会因 EPERM 失败；
 // 直接 import 调用则在同一进程内完成，没有管道依赖。
 const { inject } = await import('postject');
-// sentinelFuse 必须显式传 Node SEA 的固定常量。
-// 不传时 postject 会去找它自己的默认 sentinel（POSTJECT_SENTINEL_*），
-// 而 node 二进制里只有 NODE_SEA_FUSE_*，于是报「找不到 sentinel」。
-await inject(binaryPath, 'NODE_SEA_BLOB', fs.readFileSync(blobPath), {
-  sentinelFuse: 'NODE_SEA_FUSE_fce680ab2cc467b6e072b8b5dfa6c673',
-});
+// fuse 常量**不能硬编码**。它形如 NODE_SEA_FUSE_<hex>，但这段 hex 会随 Node
+// 版本变化（实测 Node 24 是 ...df1996b2，而网上流传的旧文档值是 ...dfa6c673）。
+// 硬编码会在换 Node 版本后抛出「找不到 sentinel」，且报错指向 postject，
+// 很难联想到是版本漂移。因此直接从载体二进制里读出来。
+const fuse = extractSeaFuse(nodeBinary);
+if (fuse === undefined) {
+  console.error('载体二进制里找不到 NODE_SEA_FUSE_*，该 node 构建不支持 SEA。');
+  process.exit(1);
+}
+console.log(`      载体 fuse：${fuse}`);
+await inject(binaryPath, 'NODE_SEA_BLOB', fs.readFileSync(blobPath), { sentinelFuse: fuse });
 console.log(`[4/4] 已注入，产物：dist-binary/${binaryName}`);
 
 // 清理中间文件，只留可执行产物。
 for (const f of ['agent.cjs', 'sea.blob', 'sea-config.json']) {
   fs.rmSync(path.join(outDir, f), { force: true });
+}
+
+/**
+ * 从 node 二进制里读出 SEA 的 fuse 常量名。
+ *
+ * 只取首个 NODE_SEA_FUSE 出现处往后的一小段做正则匹配，
+ * 不整文件扫描 —— 二进制有几十 MB，全扫会明显拖慢构建。
+ */
+function extractSeaFuse(binaryFile) {
+  const handle = fs.openSync(binaryFile, 'r');
+  try {
+    const CHUNK = 1 << 20; // 1 MB
+    const buf = Buffer.alloc(CHUNK);
+    let offset = 0;
+    let carry = '';
+    while (true) {
+      const read = fs.readSync(handle, buf, 0, CHUNK, offset);
+      if (read === 0) break;
+      const haystack = carry + buf.subarray(0, read).toString('latin1');
+      const m = /NODE_SEA_FUSE_[0-9a-fA-F]+/.exec(haystack);
+      if (m !== null) return m[0];
+      // 跨块边界的匹配：保留尾部，避免常量被切成两半而漏掉。
+      carry = haystack.slice(-64);
+      offset += read;
+    }
+    return undefined;
+  } finally {
+    fs.closeSync(handle);
+  }
 }
