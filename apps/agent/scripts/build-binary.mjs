@@ -27,14 +27,14 @@ import { build } from 'esbuild';
 const root = path.join(path.dirname(fileURLToPath(import.meta.url)), '..');
 const outDir = path.join(root, 'dist-binary');
 
-// SEA 对运行时版本敏感：载体二进制必须自带 postject 要找的 sentinel 槽位。
-// Node 24 的 Windows 构建实测注入失败（找不到 sentinel），Node 22 LTS 正常。
-// CI 里由 actions/setup-node 固定 22；这里显式校验，避免换版本后静默产出坏文件。
+// SEA 依赖载体二进制里预置的一段 sentinel（fuse）。不同 Node 版本的二进制
+// 布局可能变化，因此固定用一个经过验证的版本，避免换版本后静默产出坏文件。
+// CI 里由 actions/setup-node 提供；本地构建时同样需要这个版本。
 const major = Number(process.versions.node.split('.')[0]);
 if (major !== 22) {
   console.error(
     `构建二进制需要 Node 22（当前 ${process.versions.node}）。\n` +
-      `SEA 依赖载体二进制内的 sentinel 槽位，实测 Node 24 的 Windows 构建无法注入。`,
+      `SEA 注入依赖载体二进制内的 sentinel 槽位，只在 Node 22 上做过验证。`,
   );
   process.exit(1);
 }
@@ -106,22 +106,20 @@ console.log(`[3/4] 已准备载体二进制：${binaryName}`);
 // ---------------------------------------------------------------------------
 // 4. 注入 blob
 //
-// Windows 上必须去掉原 node.exe 的数字签名，否则注入后系统会认为签名损坏。
-// 这一步失败不影响功能，只是产物没有签名，因此容错处理。
+// 注入会破坏 node.exe 原有的数字签名，日志里的
+// 「The signature seems corrupted!」是预期现象，不影响运行。
 // ---------------------------------------------------------------------------
-if (target.ext === '.exe') {
-  try {
-    execFileSync('signtool', ['remove', '/s', binaryPath], { stdio: 'ignore' });
-  } catch {
-    // signtool 只在装有 Windows SDK 的机器上存在；没有就直接注入。
-  }
-}
 
 // postject 作为 devDependency 装在项目里，且**作为库调用**而不是起子进程：
 // 起子进程需要管道通信来捕获输出，在受限构建环境里会因 EPERM 失败；
 // 直接 import 调用则在同一进程内完成，没有管道依赖。
 const { inject } = await import('postject');
-await inject(binaryPath, 'NODE_SEA_BLOB', fs.readFileSync(blobPath));
+// sentinelFuse 必须显式传 Node SEA 的固定常量。
+// 不传时 postject 会去找它自己的默认 sentinel（POSTJECT_SENTINEL_*），
+// 而 node 二进制里只有 NODE_SEA_FUSE_*，于是报「找不到 sentinel」。
+await inject(binaryPath, 'NODE_SEA_BLOB', fs.readFileSync(blobPath), {
+  sentinelFuse: 'NODE_SEA_FUSE_fce680ab2cc467b6e072b8b5dfa6c673',
+});
 console.log(`[4/4] 已注入，产物：dist-binary/${binaryName}`);
 
 // 清理中间文件，只留可执行产物。
