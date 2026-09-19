@@ -99,7 +99,35 @@ pnpm deploy
 
 ## 三、启动主机端 agent（内网机器）
 
-先确保要暴露的服务已在运行，然后：
+先确保要暴露的服务已在运行。
+
+### 方式 A：下载预编译二进制（推荐，无需 Node）
+
+从 [Releases](https://github.com/tongluosao/nodetunnel/releases) 下载对应平台的包，解压后直接运行：
+
+| 平台          | 文件                                  |
+| ------------- | ------------------------------------- |
+| Windows x64   | `nodetunnel-agent-win-x64.zip`        |
+| Windows ARM64 | `nodetunnel-agent-win-arm64.zip`      |
+| Linux x64     | `nodetunnel-agent-linux-x64.tar.gz`   |
+| Linux ARM64   | `nodetunnel-agent-linux-arm64.tar.gz` |
+
+```bash
+# Windows
+nodetunnel-agent-win-x64.exe --server https://nodetunnel.xxx.workers.dev --token <接入令牌> --ports 8080
+
+# Linux
+chmod +x nodetunnel-agent-linux-x64
+./nodetunnel-agent-linux-x64 --server https://nodetunnel.xxx.workers.dev --token <接入令牌> --ports 8080
+```
+
+二进制已内置 Node 运行时与全部依赖，**不需要安装 Node 或 npm**。
+（体积 26–40 MB，因为单文件可执行会把整个 Node 运行时打进去。）
+
+> 没有 32 位（x86）版本：Node 官方早已停止发布 linux-x86 / win-x86 构建，
+> 单文件可执行方案拿不到载体二进制。32 位环境请用下方方式 B。
+
+### 方式 B：从源码运行（需要 Node）
 
 ```bash
 git clone <你的仓库> && cd nodetunnel
@@ -111,6 +139,8 @@ node apps/agent/dist/agent.mjs \
   --token <接入令牌> \
   --ports 8080
 ```
+
+> 这种方式下 `werift` 是外部依赖，需通过 `pnpm install` 装好。
 
 ### 参数说明
 
